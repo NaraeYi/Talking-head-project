@@ -56,3 +56,7 @@ wandb/
 
 # OS
 .DS_Store
+
+# Other
+MEANFLOW_TENSORRT_CONVERSION_GUIDE.md
+LICENSE
