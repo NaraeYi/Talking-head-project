@@ -1,57 +1,4 @@
-<h2 align='center'>Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis</h2>
-
-<div align='center'>
-    <a href=""><strong>Tianqi Li</strong></a>
-    ·
-    <a href=""><strong>Ruobing Zheng</strong></a><sup>†</sup>
-    ·
-    <a href=""><strong>Minghui Yang</strong></a>
-    ·
-    <a href=""><strong>Jingdong Chen</strong></a>
-    ·
-    <a href=""><strong>Ming Yang</strong></a>
-</div>
-<div align='center'>
-Ant Group
-</div>
-<br>
-<div align='center'>
-    <a href='https://arxiv.org/abs/2411.19509'><img src='https://img.shields.io/badge/Paper-arXiv-red'></a>
-    <a href='https://digital-avatar.github.io/ai/Ditto/'><img src='https://img.shields.io/badge/Project-Page-blue'></a>
-    <a href='https://huggingface.co/digital-avatar/ditto-talkinghead'><img src='https://img.shields.io/badge/Model-HuggingFace-yellow'></a>
-    <a href='https://github.com/antgroup/ditto-talkinghead'><img src='https://img.shields.io/badge/Code-GitHub-purple'></a>
-    <!-- <a href='https://github.com/antgroup/ditto-talkinghead'><img src='https://img.shields.io/github/stars/antgroup/ditto-talkinghead?style=social'></a> -->
-    <a href='https://colab.research.google.com/drive/19SUi1TiO32IS-Crmsu9wrkNspWE8tFbs?usp=sharing'><img src='https://img.shields.io/badge/Demo-Colab-orange'></a>
-</div>
-<br>
-<div align="center">
-    <video style="width: 95%; object-fit: cover;" controls loop src="https://github.com/user-attachments/assets/ef1a0b08-bff3-4997-a6dd-62a7f51cdb40" muted="false"></video>
-    <p>
-    ✨  For more results, visit our <a href="https://digital-avatar.github.io/ai/Ditto/"><strong>Project Page</strong></a> ✨ 
-    </p>
-</div>
-
-
-## 📌 Updates
-* [2025.11.12] 🔥🔥 We noticed the community's enthusiasm for open-source training code. [Training code](https://github.com/antgroup/ditto-talkinghead/tree/train) is now available, since there have been multiple versions and limited time to organize, it may differ slightly from the paper version.
-* [2025.07.11] 🔥 The [PyTorch model](#-pytorch-model) is now available.
-* [2025.07.07] 🔥 Ditto is accepted by ACM MM 2025.
-* [2025.01.21] 🔥 We update the [Colab](https://colab.research.google.com/drive/19SUi1TiO32IS-Crmsu9wrkNspWE8tFbs?usp=sharing) demo, welcome to try it. 
-* [2025.01.10] 🔥 We release our inference [codes](https://github.com/antgroup/ditto-talkinghead) and [models](https://huggingface.co/digital-avatar/ditto-talkinghead).
-* [2024.11.29] 🔥 Our [paper](https://arxiv.org/abs/2411.19509) is in public on arxiv.
-
- 
- ## 🔍 Overview
-<!-- This is the **train branch**, containing code for **training the model**. For inference code, please switch to the [`main`](https://github.com/antgroup/ditto-talkinghead) branch. -->
-
-This is the **inference branch**. For training code, please switch to the [`train`](https://github.com/antgroup/ditto-talkinghead/tree/train) branch.
-
-
-
-## 🔍 Overview
-This is the **train branch**, containing code for **training the model**. For inference code, please switch to the [`main`](https://github.com/antgroup/ditto-talkinghead) branch.
-
-<!-- This is the **inference branch**. For training code, please switch to the `train` branch. -->
+<h2 align='center'>Talking Head Project</h2>
 
 
 ## 🛠️ Environment
@@ -247,26 +194,4 @@ accelerate launch train.py \
 # You can find the training outputs in `${EXP_DIR}/${EXP_NAME}`.
 
 ```
-
-
-
-## ⚖️ License
-This repository is released under the Apache-2.0 license as found in the [LICENSE](LICENSE) file.
-
-## 📚 Citation
-If you find this codebase useful for your research, please use the following entry.
-```BibTeX
-@article{li2024ditto,
-    title={Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis},
-    author={Li, Tianqi and Zheng, Ruobing and Yang, Minghui and Chen, Jingdong and Yang, Ming},
-    journal={arXiv preprint arXiv:2411.19509},
-    year={2024}
-}
-```
-
-
-## 🌟 Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=antgroup/ditto-talkinghead&type=Date)](https://www.star-history.com/#antgroup/ditto-talkinghead&Date)
-
 
