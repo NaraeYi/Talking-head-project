@@ -11,6 +11,22 @@ from ..utils.utils import load_json, load_pkl, dump_pkl
 
 FPS = 25
 
+##### Path replacement for relocated datasets 데이터셋 로딩 코드에서 경로를 자동으로 치환 #####
+PATH_REPLACEMENTS = [
+    ("/root/ditto", "/workspace/ditto"),
+    # Add more path replacements here if needed
+]
+
+def replace_paths(data_list):
+    """Replace old paths with new paths in data_list"""
+    for data in data_list:
+        for key in data:
+            if isinstance(data[key], str):
+                for old_path, new_path in PATH_REPLACEMENTS:
+                    if old_path in data[key]:
+                        data[key] = data[key].replace(old_path, new_path)
+    return data_list
+
 
 def norm_by_mean_var(arr, v_mean_var):
     mean = np.broadcast_to(v_mean_var[0], arr.shape)
@@ -168,6 +184,9 @@ class Stage2Dataset(Dataset):
     def _load_data(self, data_list_json):
         # [kps_npy, aud_npy, frame_num]
         data_list = load_json(data_list_json)
+        
+        ##### Replace old paths with new paths (e.g., /root/ditto -> /workspace/ditto) #####
+        data_list = replace_paths(data_list)
 
         if not self.preload:
             return data_list

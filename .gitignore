@@ -1,50 +1,58 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
-*__pycache__
-**/__pycache__/
-*.py[cod]
-**/*.py[cod]
-*$py.class
-
-# Model weights
-checkpoints
-**/*.pth
-**/*.onnx
-**/*.pt
-**/*.pth.tar
-
-.idea
-.vscode
-.DS_Store
-*.DS_Store
-
-*.swp
-tmp*
-
-*build
-*.egg-info/
-
-log/*
-*.mp4
-*.png
-*.jpg
-*.wav
-*.pth
 *.pyc
-*.jpeg
+*.pyo
+*.pyd
+*.so
+.ipynb_checkpoints/
+scripts/
+
+# Env
+.venv/
+venv/
+.env
+.env.*
+
+# Logs / outputs
+logs/
+output/
+outputs/
+runs/
+wandb/
+tensorboard/
+*.log
+
+# Models / checkpoints (보통은 repo에 안 올림)
+*.pt
+*.pth
+*.ckpt
+*.onnx
 *.pkl
+*.so
+*.task
+*.engine
+*.data
+
+checkpoints/
+weights/
+experiments/
+google-research/
+metrics/
 
 
-prepare_data
+# Data (절대 올리지 않는 게 보통)
+data/
+dataset/
+datasets/
 
-!example/audio.wav
-!example/image.png
+ditto_iMF_output/
+ditto_meanflow_output/
+ditto_original_output/
+example/testset/
+example_train/
+sample_output/
+testset_results/
+wandb/
 
-example/*
-!example/
-!example/trainset_example/
-!example/trainset_example/fps25_mp4/
-example/trainset_example/fps25_mp4/*
-!example/trainset_example/fps25_mp4/*.mp4
-!example/get_data_info_json_for_trainset_example.py
-
+# OS
+.DS_Store

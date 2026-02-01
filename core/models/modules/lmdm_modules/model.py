@@ -5,10 +5,11 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 from torch import Tensor
 from torch.nn import functional as F
+import math
+
 
 from .rotary_embedding_torch import RotaryEmbedding
 from .utils import PositionalEncoding, SinusoidalPosEmb, prob_mask_like
-import math
 
 
 class DenseFiLM(nn.Module):
@@ -247,11 +248,14 @@ class MotionDecoder(nn.Module):
         cond_feature_dim: int = 4800,
         activation: Callable[[Tensor], Tensor] = F.gelu,
         use_rotary=True,
+        multi_cond_frame=False,
         **kwargs
     ) -> None:
 
         super().__init__()
 
+        self.multi_cond_frame = multi_cond_frame
+        
         output_feats = nfeats
 
         # positional embeddings
@@ -286,7 +290,10 @@ class MotionDecoder(nn.Module):
         self.norm_cond = nn.LayerNorm(latent_dim)
 
         # input projection
-        self.input_projection = nn.Linear(nfeats * 2, latent_dim)
+        if self.multi_cond_frame:
+            self.input_projection = nn.Linear(nfeats * 2 + 1, latent_dim)
+        else:
+            self.input_projection = nn.Linear(nfeats * 2, latent_dim)
         self.cond_encoder = nn.Sequential()
         for _ in range(2):
             self.cond_encoder.append(
@@ -341,7 +348,13 @@ class MotionDecoder(nn.Module):
         batch_size, device = x.shape[0], x.device
 
         # concat last frame, project to latent space
-        x = torch.cat([x, cond_frame.unsqueeze(1).repeat(1, x.shape[1], 1)], dim=-1)
+        # cond_frame: [b, dim] | [b, n, dim+1]
+        if self.multi_cond_frame:
+            # [b, n, dim+1] (+1 mask)
+            x = torch.cat([x, cond_frame], dim=-1)
+        else:
+            # [b, dim]
+            x = torch.cat([x, cond_frame.unsqueeze(1).repeat(1, x.shape[1], 1)], dim=-1)
         x = self.input_projection(x)
         # add the positional embeddings of the input sequence to provide temporal information
         x = self.abs_pos_encoding(x)
@@ -385,7 +398,10 @@ class MotionDecoder(nn.Module):
         output = self.final_layer(output)
 
         return output
-    
+
+
+
+#### MeanFlow 전용 decoder:
 class MotionDecoderMF(nn.Module):
     """
     MeanFlow 전용 decoder:
@@ -509,6 +525,7 @@ class MotionDecoderMF(nn.Module):
         batch_size, device = x.shape[0], x.device
         dtype = x.dtype
 
+
         # normalize shapes for time embedding
         if r.dim() == 3:
             r_in = r.view(batch_size)
@@ -546,7 +563,7 @@ class MotionDecoderMF(nn.Module):
         # MeanFlow time embedding
         t_hidden = self.time_mlp_t(t_in)
         r_hidden = self.time_mlp_r(t_in - r_in)
-        
+
         if self.time_fuse == "sum":
             fused = t_hidden + r_hidden
         else:
@@ -570,6 +587,7 @@ class MotionDecoderMF(nn.Module):
         output = self.final_layer(output)
         return output
     
+
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.
