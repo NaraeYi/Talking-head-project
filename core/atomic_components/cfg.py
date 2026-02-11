@@ -90,6 +90,10 @@ def parse_cfg(cfg_pkl, data_root, replace_cfg=None):
     if isinstance(replace_cfg, dict) and "use_meanflow" in replace_cfg:
         lmdm_cfg["use_meanflow"] = replace_cfg["use_meanflow"]
 
+    # meanflow_mode가 제공되면 lmdm_cfg에 추가
+    if isinstance(replace_cfg, dict) and "meanflow_mode" in replace_cfg:
+        lmdm_cfg["meanflow_mode"] = replace_cfg["meanflow_mode"]
+
     w2f_type = audio2motion_cfg["w2f_type"]
     wav2feat_cfg = {
         "w2f_cfg": base_cfg["hubert_cfg"] if w2f_type == "hubert" else base_cfg["wavlm_cfg"],

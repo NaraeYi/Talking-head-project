@@ -20,3 +20,9 @@ class WarpF3D:
         out = self.warp_net(f_s, x_s, x_d)
         return out
     
+    def get_dense_motion_timing_stats(self):
+        """Get timing statistics from DenseMotionNetwork"""
+        if hasattr(self.warp_net, 'get_dense_motion_timing_stats'):
+            return self.warp_net.get_dense_motion_timing_stats()
+        return {}
+    

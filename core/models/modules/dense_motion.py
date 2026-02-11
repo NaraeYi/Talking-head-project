@@ -7,6 +7,7 @@ The module that predicting a dense motion from sparse motion representation give
 from torch import nn
 import torch.nn.functional as F
 import torch
+import time
 from .util import Hourglass, make_coordinate_grid, kp2gaussian
 
 
@@ -25,6 +26,44 @@ class DenseMotionNetwork(nn.Module):
             self.occlusion = nn.Conv2d(self.hourglass.out_filters*reshape_depth, 1, kernel_size=7, padding=3)
         else:
             self.occlusion = None
+        
+        # Timing statistics
+        self.timing_stats = {
+            'phase1_compress_ms': [],
+            'phase2_sparse_motion_ms': [],
+            'phase3_deformed_feature_ms': [],
+            'phase4_heatmap_ms': [],
+            'phase5_input_prep_ms': [],
+            'phase6_hourglass_ms': [],
+            'phase7_mask_ms': [],
+            'phase8_deformation_ms': [],
+            'phase9_occlusion_ms': [],
+        }
+        self.enable_timing = False   # True False
+
+    def enable_timing_stats(self, enable=False):
+        """Enable/disable timing statistics collection"""
+        self.enable_timing = enable
+        if enable:
+            # Reset stats
+            for key in self.timing_stats:
+                self.timing_stats[key] = []
+
+    def get_timing_stats(self):
+        """Get timing statistics summary"""
+        stats = {}
+        for key, values in self.timing_stats.items():
+            if values:
+                stats[key] = {
+                    'mean_ms': sum(values) / len(values),
+                    'total_ms': sum(values),
+                    'count': len(values),
+                    'min_ms': min(values),
+                    'max_ms': max(values),
+                }
+            else:
+                stats[key] = {'mean_ms': 0, 'total_ms': 0, 'count': 0, 'min_ms': 0, 'max_ms': 0}
+        return stats
 
     def create_sparse_motions(self, feature, kp_driving, kp_source):
         bs, _, d, h, w = feature.shape  # (bs, 4, 16, 64, 64)
@@ -67,38 +106,132 @@ class DenseMotionNetwork(nn.Module):
     def forward(self, feature, kp_driving, kp_source):
         bs, _, d, h, w = feature.shape  # (bs, 32, 16, 64, 64)
 
+        # ========== Phase 1: Feature 압축 ==========
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            t_start = time.perf_counter()
+        
         feature = self.compress(feature)  # (bs, 4, 16, 64, 64)
         feature = self.norm(feature)  # (bs, 4, 16, 64, 64)
         feature = F.relu(feature)  # (bs, 4, 16, 64, 64)
+        
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            elapsed = (time.perf_counter() - t_start) * 1000
+            self.timing_stats['phase1_compress_ms'].append(elapsed)
 
         out_dict = dict()
 
         # 1. deform 3d feature
+        # ========== Phase 2: Sparse Motion 생성 ==========
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            t_start = time.perf_counter()
+        
         sparse_motion = self.create_sparse_motions(feature, kp_driving, kp_source)  # (bs, 1+num_kp, d, h, w, 3)
+        
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            elapsed = (time.perf_counter() - t_start) * 1000
+            self.timing_stats['phase2_sparse_motion_ms'].append(elapsed)
+
+        # ========== Phase 3: Deformed Feature 생성 ==========
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            t_start = time.perf_counter()
+        
         deformed_feature = self.create_deformed_feature(feature, sparse_motion)  # (bs, 1+num_kp, c=4, d=16, h=64, w=64)
+        
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            elapsed = (time.perf_counter() - t_start) * 1000
+            self.timing_stats['phase3_deformed_feature_ms'].append(elapsed)
 
         # 2. (bs, 1+num_kp, d, h, w)
+        # ========== Phase 4: Heatmap 생성 ==========
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            t_start = time.perf_counter()
+        
         heatmap = self.create_heatmap_representations(deformed_feature, kp_driving, kp_source)  # (bs, 1+num_kp, 1, d, h, w)
+        
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            elapsed = (time.perf_counter() - t_start) * 1000
+            self.timing_stats['phase4_heatmap_ms'].append(elapsed)
 
+        # ========== Phase 5: Hourglass 입력 준비 ==========
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            t_start = time.perf_counter()
+        
         input = torch.cat([heatmap, deformed_feature], dim=2)  # (bs, 1+num_kp, c=5, d=16, h=64, w=64)
         input = input.view(bs, -1, d, h, w)  # (bs, (1+num_kp)*c=105, d=16, h=64, w=64)
+        
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            elapsed = (time.perf_counter() - t_start) * 1000
+            self.timing_stats['phase5_input_prep_ms'].append(elapsed)
 
+        # ========== Phase 6: Hourglass 네트워크 ==========
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            t_start = time.perf_counter()
+        
         prediction = self.hourglass(input)
+        
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            elapsed = (time.perf_counter() - t_start) * 1000
+            self.timing_stats['phase6_hourglass_ms'].append(elapsed)
 
+        # ========== Phase 7: Mask 생성 ==========
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            t_start = time.perf_counter()
+        
         mask = self.mask(prediction)
         mask = F.softmax(mask, dim=1)  # (bs, 1+num_kp, d=16, h=64, w=64)
+        
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            elapsed = (time.perf_counter() - t_start) * 1000
+            self.timing_stats['phase7_mask_ms'].append(elapsed)
+        
         out_dict['mask'] = mask
+
+        # ========== Phase 8: Deformation 계산 ==========
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            t_start = time.perf_counter()
+        
         mask = mask.unsqueeze(2)                                   # (bs, num_kp+1, 1, d, h, w)
         sparse_motion = sparse_motion.permute(0, 1, 5, 2, 3, 4)    # (bs, num_kp+1, 3, d, h, w)
         deformation = (sparse_motion * mask).sum(dim=1)            # (bs, 3, d, h, w)  mask take effect in this place
         deformation = deformation.permute(0, 2, 3, 4, 1)           # (bs, d, h, w, 3)
+        
+        if self.enable_timing:
+            torch.cuda.synchronize() if feature.is_cuda else None
+            elapsed = (time.perf_counter() - t_start) * 1000
+            self.timing_stats['phase8_deformation_ms'].append(elapsed)
 
         out_dict['deformation'] = deformation
 
+        # ========== Phase 9: Occlusion Map 생성 (Optional) ==========
         if self.flag_estimate_occlusion_map:
+            if self.enable_timing:
+                torch.cuda.synchronize() if feature.is_cuda else None
+                t_start = time.perf_counter()
+            
             bs, _, d, h, w = prediction.shape
             prediction_reshape = prediction.view(bs, -1, h, w)
             occlusion_map = torch.sigmoid(self.occlusion(prediction_reshape))  # Bx1x64x64
+            
+            if self.enable_timing:
+                torch.cuda.synchronize() if feature.is_cuda else None
+                elapsed = (time.perf_counter() - t_start) * 1000
+                self.timing_stats['phase9_occlusion_ms'].append(elapsed)
+            
             out_dict['occlusion_map'] = occlusion_map
 
         return out_dict

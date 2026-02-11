@@ -59,6 +59,7 @@ class TrainOptions(PrintableConfig):
     audio_feat_dim: int = 1103     # audio_feat_dim (1024 + 63 + 8 + 2 + 6)
     seq_frames: int = int(3.2 * 25)     # clip length
     use_meanflow: bool = True          ##### use MeanFlow (single-step) instead of diffusion
+    meanflow_mode: str = "improved"    ##### "meanflow" (original) or "improved" (Improved MeanFlow)
     time_sampler: str = "logit_normal"  ##### meanflow time sampler: [uniform, logit_normal]
 
     ########## train ##########

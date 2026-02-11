@@ -8,7 +8,7 @@ import pickle
 import time
 
 from stream_pipeline_offline import StreamSDK
-
+# from stream_pipeline_offline_retargeting import StreamSDK
 
 def seed_everything(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -35,6 +35,27 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
         more_kwargs = load_pkl(more_kwargs)
     setup_kwargs = more_kwargs.get("setup_kwargs", {})
     run_kwargs = more_kwargs.get("run_kwargs", {})
+
+    # retargeting 설정
+    # setup_kwargs.update({
+    #     "lp_retarget_enable": False,  # True False
+    #     # LivePortrait에서 받은 retargeting weight (stitching+retargeting 합쳐진 pth)
+    #     "lp_checkpoint_S": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/pretrained_weights/stitching_retargeting_module.pth",
+    #     # LivePortrait src/config/models.yaml 경로
+    #     "lp_models_yaml": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/src/config/models.yaml",
+    #     # 목표 상태
+    #     "lp_target_eye_ratio": 0.39,    # 눈을 더 뜨게(보수적으로 0.39~0.5 추천)
+    #     "lp_target_lip_ratio": 0.0,     # 입 닫기
+    #     # 초반 몇 프레임만 적용하고 싶으면
+    #     "lp_first_n": 10000,
+    #     "lp_fade_n": 10,
+
+    #     # baseline이 전체 구간에서 계속 감긴다면 first_n만으로는 다시 감길 수 있음
+    #     # 그 경우 first_n을 크게 잡거나, fade_n=0으로 길게 유지해보는 게 맞음
+
+    #     "lp_apply_to": "driving",       # 권장
+    #     "lp_device": "cuda:0",
+    # })
 
     SDK.setup(source_path, output_path, **setup_kwargs)
 
@@ -105,6 +126,42 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
         steps_str = f"{sampling_timesteps_val} steps" if sampling_timesteps_val else "N steps"
         print(f"Ditto ({steps_str}) = motion generation ({motion_dit_time:.3f}s) + rendering ({rendering_time:.3f}s)")
     print("=" * 80)
+    
+    # DenseMotionNetwork Phase별 Timing 통계 출력
+    if hasattr(SDK, 'warp_f3d'):
+        dense_motion_stats = SDK.warp_f3d.get_dense_motion_timing_stats()
+        if dense_motion_stats:
+            print("\n" + "=" * 80)
+            print("🔍 DENSE MOTION NETWORK - PHASE TIMING BREAKDOWN")
+            print("=" * 80)
+            phase_names = {
+                'phase1_compress_ms': 'Phase 1: Feature 압축',
+                'phase2_sparse_motion_ms': 'Phase 2: Sparse Motion 생성',
+                'phase3_deformed_feature_ms': 'Phase 3: Deformed Feature 생성',
+                'phase4_heatmap_ms': 'Phase 4: Heatmap 생성',
+                'phase5_input_prep_ms': 'Phase 5: Hourglass 입력 준비',
+                'phase6_hourglass_ms': 'Phase 6: Hourglass 네트워크',
+                'phase7_mask_ms': 'Phase 7: Mask 생성',
+                'phase8_deformation_ms': 'Phase 8: Deformation 계산',
+                'phase9_occlusion_ms': 'Phase 9: Occlusion Map 생성',
+            }
+            
+            total_time = 0
+            for phase_key, phase_name in phase_names.items():
+                if phase_key in dense_motion_stats:
+                    data = dense_motion_stats[phase_key]
+                    if data['count'] > 0:
+                        total_time += data['total_ms']
+                        print(f"{phase_name:40s} | "
+                              f"Mean: {data['mean_ms']:7.2f}ms | "
+                              f"Total: {data['total_ms']:8.2f}ms | "
+                              f"Count: {data['count']:4d} | "
+                              f"Min: {data['min_ms']:6.2f}ms | "
+                              f"Max: {data['max_ms']:6.2f}ms")
+            
+            print("-" * 80)
+            print(f"{'Total Dense Motion Time':40s} | {total_time:8.2f}ms ({total_time/1000:.3f}s)")
+            print("=" * 80)
 
 
 if __name__ == "__main__":
@@ -117,14 +174,15 @@ if __name__ == "__main__":
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
     # parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/experiments/ditto_original_hdtf_20251221_234237/weights/train_99.pt", help="path to trained checkpoint (overrides pkl model_path)")
     parser.add_argument("--checkpoint_path", type=str, default=None, help="path to trained checkpoint (overrides pkl model_path)")
+    parser.add_argument("--use_meanflow", type=bool, default=True, help="Use MeanFlow (1-step) instead of DDIM diffusion") # True: MeanFlow (1-step), False: DDIM diffusion
+    parser.add_argument("--meanflow_mode", type=str, default="improved", choices=["meanflow", "improved"],
+                       help="MeanFlow mode: 'meanflow' (original) or 'improved' (default: improved)")
 
-
-
-    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/audio.wav")
-    parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
-    # parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/Shaheen_10s.wav")
-    # parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/Shaheen.png")
-    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/ditto_original_output/ditto15s_trt.mp4") # iMF meanflow original / mf15s_trt imf15s_trt ditto15s_trt
+    # parser.add_argument("--audio_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/audio.wav")
+    # parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
+    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/obama_10s.wav") # Shaheen obama
+    parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/obama.png")
+    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/ditto_original_output/sample.mp4") # iMF meanflow original / mf15s_trt imf15s_trt ditto15s_trt
     args = parser.parse_args()
 
     # init sdk
@@ -132,11 +190,12 @@ if __name__ == "__main__":
     cfg_pkl = args.cfg_pkl     # cfg pkl
     # SDK = StreamSDK(cfg_pkl, data_root)
     # checkpoint_path가 지정되면 새로 학습한 가중치로 대체
-    use_meanflow = False  # True: MeanFlow (1-step), False: DDIM diffusion
+    use_meanflow = args.use_meanflow  # True: MeanFlow (1-step), False: DDIM diffusion
+    meanflow_mode = args.meanflow_mode  # "meanflow" or "improved"
     if args.checkpoint_path:
-        SDK = StreamSDK(cfg_pkl, data_root, checkpoint_path=args.checkpoint_path, use_meanflow=use_meanflow)
+        SDK = StreamSDK(cfg_pkl, data_root, checkpoint_path=args.checkpoint_path, use_meanflow=use_meanflow, meanflow_mode=meanflow_mode)
     else:
-        SDK = StreamSDK(cfg_pkl, data_root, use_meanflow=use_meanflow)
+        SDK = StreamSDK(cfg_pkl, data_root, use_meanflow=use_meanflow, meanflow_mode=meanflow_mode)
 
     # input args
     audio_path = args.audio_path    # .wav

@@ -41,6 +41,9 @@ class WarpingNetwork(nn.Module):
             estimate_occlusion_map=estimate_occlusion_map,
             **dense_motion_params
         )
+        # Timing 활성화
+        self.dense_motion_network.enable_timing_stats(enable=True)
+
 
         self.third = SameBlock2d(max_features, block_expansion * (2 ** num_down_blocks), kernel_size=(3, 3), padding=(1, 1), lrelu=True)
         self.fourth = nn.Conv2d(in_channels=block_expansion * (2 ** num_down_blocks), out_channels=block_expansion * (2 ** num_down_blocks), kernel_size=1, stride=1)
@@ -80,6 +83,12 @@ class WarpingNetwork(nn.Module):
         # return ret_dct
 
         return out
+    
+    def get_dense_motion_timing_stats(self):
+        """Get timing statistics from DenseMotionNetwork"""
+        if hasattr(self, 'dense_motion_network'):
+            return self.dense_motion_network.get_timing_stats()
+        return {}
     
     def load_model(self, ckpt_path):
         self.load_state_dict(torch.load(ckpt_path, map_location=lambda storage, loc: storage))

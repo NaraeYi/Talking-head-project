@@ -51,6 +51,7 @@ class Trainer:
     def __init__(self, opt: TrainOptions):
         self.opt = opt
         self.use_meanflow = getattr(opt, "use_meanflow", False)
+        self.meanflow_mode = getattr(opt, "meanflow_mode", "improved")
 
         print(time.asctime(), '_init_accelerate')
         self._init_accelerate()
@@ -116,6 +117,7 @@ class Trainer:
                 use_reg_loss=opt.use_reg_loss,
                 dim_ws=dim_ws,
                 use_meanflow=self.use_meanflow,
+                meanflow_mode=self.meanflow_mode,
             )
 
         return lmdm

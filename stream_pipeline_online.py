@@ -42,9 +42,10 @@ wav2feat_cfg:
 
 
 class StreamSDK:
-    def __init__(self, cfg_pkl, data_root, use_meanflow, **kwargs):
-        # use_meanflow를 kwargs에 추가하여 parse_cfg에 전달
+    def __init__(self, cfg_pkl, data_root, use_meanflow, meanflow_mode="improved", **kwargs):
+        # use_meanflow, meanflow_mode를 kwargs에 추가하여 parse_cfg에 전달
         kwargs["use_meanflow"] = use_meanflow
+        kwargs["meanflow_mode"] = meanflow_mode
 
         [
             avatar_registrar_cfg,

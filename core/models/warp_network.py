@@ -33,3 +33,9 @@ class WarpNetwork:
             raise ValueError(f"Unsupported model type: {self.model_type}")
         
         return pred
+    
+    def get_dense_motion_timing_stats(self):
+        """Get timing statistics from DenseMotionNetwork (only for PyTorch model)"""
+        if self.model_type == 'pytorch' and hasattr(self.model, 'get_dense_motion_timing_stats'):
+            return self.model.get_dense_motion_timing_stats()
+        return {}

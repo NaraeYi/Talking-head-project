@@ -3,7 +3,7 @@ import torch
 
 from .modules.model import MotionDecoder, MotionDecoderMF
 from .modules.diffusion import MotionDiffusion
-from .modules.diffusion_mf import MotionMeanFlow
+from .modules.diffusion_mf_mode import MotionMeanFlow
 
 
 FPS = 25
@@ -22,7 +22,8 @@ class LMDM:
         use_last_frame_loss=False,    # only for train
         use_reg_loss=False,    # only for train
         dim_ws=None,    # only for train
-        use_meanflow=False, 
+        use_meanflow=False,
+        meanflow_mode="improved",  # "meanflow" or "improved"
     ):
         self.motion_feat_dim = motion_feat_dim
         self.audio_feat_dim = audio_feat_dim
@@ -77,6 +78,7 @@ class LMDM:
                 # ---- 기타 ----
                 detach_cond=True,
                 use_r0_recon=True,
+                meanflow_mode=meanflow_mode,
             )
         else:
             model = MotionDecoder(

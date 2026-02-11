@@ -8,6 +8,8 @@ import pickle
 import time
 
 from stream_pipeline_offline import StreamSDK
+# from stream_pipeline_offline_retargeting import StreamSDK
+
 
 
 def seed_everything(seed):
@@ -37,6 +39,27 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
         more_kwargs = load_pkl(more_kwargs)
     setup_kwargs = more_kwargs.get("setup_kwargs", {})
     run_kwargs = more_kwargs.get("run_kwargs", {})
+
+    # retargeting 설정
+    # setup_kwargs.update({
+    #     "lp_retarget_enable": True,
+    #     # LivePortrait에서 받은 retargeting weight (stitching+retargeting 합쳐진 pth)
+    #     "lp_checkpoint_S": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/pretrained_weights/stitching_retargeting_module.pth",
+    #     # LivePortrait src/config/models.yaml 경로
+    #     "lp_models_yaml": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/src/config/models.yaml",
+    #     # 목표 상태
+    #     "lp_target_eye_ratio": 0.39,    # 눈을 더 뜨게(보수적으로 0.39~0.5 추천)
+    #     "lp_target_lip_ratio": 0.0,     # 입 닫기
+    #     # 초반 몇 프레임만 적용하고 싶으면
+    #     "lp_first_n": 10000,
+    #     "lp_fade_n": 10,
+
+    #     # baseline이 전체 구간에서 계속 감긴다면 first_n만으로는 다시 감길 수 있음
+    #     # 그 경우 first_n을 크게 잡거나, fade_n=0으로 길게 유지해보는 게 맞음
+
+    #     "lp_apply_to": "driving",       # 권장
+    #     "lp_device": "cuda:0",
+    # })
 
     # Setup 시간 측정
     setup_start = time.perf_counter() #
@@ -276,11 +299,11 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_path", type=str, default=None, help="path to trained checkpoint (overrides pkl model_path)")  # tensorrt 사용시 None
 
 
-    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/audio.wav")
-    parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
-    # parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/obama_10s.wav")
-    # parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/obama.png")
-    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/ditto50_15s_trt.mp4") # tensorrt/ ditto_meanflow_output/ditto_original_output
+    # parser.add_argument("--audio_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/audio.wav")
+    # parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
+    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/Shaheen_10s.wav")
+    parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/Shaheen.png")
+    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/sample.mp4") # tensorrt/ ditto_meanflow_output/ditto_original_output/ ditto_retargeting10step
     args = parser.parse_args()
 
     # init sdk

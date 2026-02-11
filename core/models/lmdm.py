@@ -20,6 +20,7 @@ class LMDM:
         kwargs["module_name"] = "LMDM"
         
         self.use_meanflow = kwargs.get("use_meanflow", False)
+        self.meanflow_mode = kwargs.get("meanflow_mode", "improved")
 
         self.model, self.model_type = load_model(model_path, device=device, **kwargs)
         self.device = device
@@ -30,7 +31,7 @@ class LMDM:
 
         # 디버그: 로드된 모델 타입 출력
         print(f"[LMDM] Loaded model: {model_path}")
-        print(f"[LMDM] Model type: {self.model_type}, use_meanflow: {self.use_meanflow}")
+        print(f"[LMDM] Model type: {self.model_type}, use_meanflow: {self.use_meanflow}, meanflow_mode: {self.meanflow_mode}")
 
         if self.model_type == "pytorch":
             pass

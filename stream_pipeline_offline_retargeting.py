@@ -8,6 +8,23 @@ from tqdm import tqdm
 import joblib
 import torch
 
+import os
+import os.path as osp
+import yaml
+
+import sys, os
+LP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "prepare_data_train", "LivePortrait"))
+if LP_ROOT not in sys.path:
+    sys.path.insert(0, LP_ROOT)
+
+from src.utils.retargeting_utils import calc_eye_close_ratio, calc_lip_close_ratio
+from src.utils.helper import load_model, concat_feat
+
+from src.config.crop_config import CropConfig
+from src.utils.cropper import Cropper
+
+
+
 # writer, dit 진행률 표시를 위한 커스텀 tqdm
 class PreciseTqdm(tqdm):
     """Custom tqdm that shows elapsed time with decimal precision (seconds). tqdm을 상속받아 format_dict를 오버라이드"""
@@ -39,6 +56,70 @@ from core.atomic_components.putback import PutBack
 from core.atomic_components.writer import VideoWriterByImageIO
 from core.atomic_components.wav2feat import Wav2Feat
 from core.atomic_components.cfg import parse_cfg, print_cfg
+
+# =========================
+# LivePortrait-style Retargeting Adapter (official skeleton)
+# =========================
+# from retargeting_utils import calc_eye_close_ratio, calc_lip_close_ratio
+# from helper import load_model, concat_feat
+
+class LPRetargetingAdapter:
+    """
+    - weights 로딩: helper.load_model(..., model_type='stitching_retargeting_module')와 동일한 방식
+    - ratio 결합: LivePortraitWrapper.calc_combined_eye_ratio / calc_combined_lip_ratio와 동일한 방식
+    - Δ 계산: LivePortraitWrapper.retarget_eye / retarget_lip과 동일한 방식
+    """
+    def __init__(self, checkpoint_S: str, models_yaml: str, device: str):
+        assert osp.exists(checkpoint_S), f"checkpoint_S not found: {checkpoint_S}"
+        assert osp.exists(models_yaml), f"models_yaml not found: {models_yaml}"
+
+        self.device = torch.device(device)
+        model_config = yaml.load(open(models_yaml, "r"), Loader=yaml.SafeLoader)
+
+        # helper.load_model의 stitching_retargeting_module 분기 그대로: {'stitching','lip','eye'} dict 반환
+        self.stitching_retargeting_module = load_model(
+            checkpoint_S, model_config, self.device, model_type="stitching_retargeting_module"
+        )
+
+    def calc_combined_eye_ratio(self, target_eye_ratio: float, source_lmk: np.ndarray) -> torch.Tensor:
+        # LivePortraitWrapper.calc_combined_eye_ratio 그대로
+        c_s_eyes = calc_eye_close_ratio(source_lmk[None])  # 1x2
+        c_s_eyes_tensor = torch.from_numpy(c_s_eyes).float().to(self.device)
+        c_d_eyes_tensor = torch.Tensor([[float(target_eye_ratio)]]).to(self.device)  # 1x1
+        combined = torch.cat([c_s_eyes_tensor, c_d_eyes_tensor], dim=1)  # 1x3
+        return combined
+    def calc_combined_eye_ratio_from_eye_open(self, target_eye_ratio: float, eye_open_1x2: np.ndarray) -> torch.Tensor:
+        """
+        eye_open_1x2: shape (1,2)  (left, right)
+        return: (1,3) = [left, right, target]
+        """
+        c_s = np.asarray(eye_open_1x2, dtype=np.float32).reshape(1, 2)
+        c_s_tensor = torch.from_numpy(c_s).float().to(self.device)
+        c_d_tensor = torch.tensor([[float(target_eye_ratio)]], device=self.device, dtype=c_s_tensor.dtype)
+        return torch.cat([c_s_tensor, c_d_tensor], dim=1)  # 1x3
+
+
+    def calc_combined_lip_ratio(self, target_lip_ratio: float, source_lmk: np.ndarray) -> torch.Tensor:
+        # LivePortraitWrapper.calc_combined_lip_ratio 그대로
+        c_s_lip = calc_lip_close_ratio(source_lmk[None])  # 1x1
+        c_s_lip_tensor = torch.from_numpy(c_s_lip).float().to(self.device)
+        c_d_lip_tensor = torch.Tensor([[float(target_lip_ratio)]]).to(self.device)  # 1x1
+        combined = torch.cat([c_s_lip_tensor, c_d_lip_tensor], dim=1)  # 1x2
+        return combined
+
+    def retarget_eye(self, kp_source: torch.Tensor, combined_eye_ratio: torch.Tensor) -> torch.Tensor:
+        # LivePortraitWrapper.retarget_eye 그대로
+        feat_eye = concat_feat(kp_source, combined_eye_ratio)
+        with torch.no_grad():
+            delta = self.stitching_retargeting_module["eye"](feat_eye)
+        return delta.reshape(-1, kp_source.shape[1], 3)  # (B,K,3)
+
+    def retarget_lip(self, kp_source: torch.Tensor, combined_lip_ratio: torch.Tensor) -> torch.Tensor:
+        # LivePortraitWrapper.retarget_lip 그대로
+        feat_lip = concat_feat(kp_source, combined_lip_ratio)
+        with torch.no_grad():
+            delta = self.stitching_retargeting_module["lip"](feat_lip)
+        return delta.reshape(-1, kp_source.shape[1], 3)  # (B,K,3)
 
 
 class StreamSDK:
@@ -83,6 +164,7 @@ class StreamSDK:
             'putback_total_ms': 0.0,  # total time for putback
             'stitch_total_ms': 0.0,  # total time for stitch
         }
+        
 
     def _merge_kwargs(self, default_kwargs, run_kwargs):
         for k, v in default_kwargs.items():
@@ -198,7 +280,110 @@ class StreamSDK:
             source_info["x_s_info_lst"] = smooth_x_s_info_lst(source_info["x_s_info_lst"], smo_k=self.smo_k_s)
 
         self.source_info = source_info
+        # print("[DEBUG] source_info keys:", self.source_info.keys())
+        # print("[DEBUG] eye_open_lst type:", type(self.source_info.get("eye_open_lst", None)))
+        # if "eye_open_lst" in self.source_info:
+        #     e0 = self.source_info["eye_open_lst"][0]
+        #     try:
+        #         import numpy as np
+        #         print("[DEBUG] eye_open_lst[0] type:", type(e0))
+        #         if hasattr(e0, "shape"):
+        #             print("[DEBUG] eye_open_lst[0].shape:", e0.shape)
+        #         else:
+        #             print("[DEBUG] eye_open_lst[0] (no shape):", e0)
+        #         # numpy로 변환 가능한지도 확인
+        #         e0_np = np.array(e0)
+        #         print("[DEBUG] np.array(e0).shape:", e0_np.shape, "value:", e0_np)
+        #     except Exception as ex:
+        #         print("[DEBUG] eye_open debug failed:", ex)
+        # else:
+        #     print("[DEBUG] eye_open_lst not found in source_info")
         self.source_info_frames = len(source_info["x_s_info_lst"])
+
+        # =========================
+        # LivePortrait retargeting options (normalize ref baseline)
+        # =========================
+        self.lp_retarget_enable = kwargs.get("lp_retarget_enable", False)
+
+        # generation-order counter (motion_stitch_worker에서 1씩 증가)
+        self.lp_retarget_fid = 0
+        self.lp_retarget_delta = None  # (B,K,3) cached once
+
+        if self.lp_retarget_enable:
+            # 필수: LivePortrait weights + models.yaml
+            self.lp_checkpoint_S = kwargs.get("lp_checkpoint_S", None)
+            self.lp_models_yaml  = kwargs.get("lp_models_yaml", None)
+
+            # 목표 ratio: (눈 뜨기 / 입 닫기)
+            # - LivePortrait 코드에서 눈은 0.39 같은 값을 "최소 오픈"으로 쓰는 패턴이 있음. :contentReference[oaicite:9]{index=9}
+            self.lp_target_eye_ratio = float(kwargs.get("lp_target_eye_ratio", 0.39))
+            self.lp_target_lip_ratio = float(kwargs.get("lp_target_lip_ratio", 0.0))
+
+            # 적용 프레임 스케줄: 초반 N프레임만 강하게, 이후 fade_n 동안 선형 감소
+            self.lp_first_n = int(kwargs.get("lp_first_n", 25))   # 25fps 기준 1초
+            self.lp_fade_n  = int(kwargs.get("lp_fade_n", 10))
+
+            # 어디에 더할지: 'driving' 추천 (baseline만 올리고 깜빡임 변동은 유지)
+            self.lp_apply_to = kwargs.get("lp_apply_to", "driving")  # 'driving' or 'source'
+
+            # retargeting MLP는 매우 가벼워서 CPU로 돌려도 됨.
+            # torch 텐서로 x_s/x_d가 GPU면 device를 cuda로 두는 게 복사 비용이 적음.
+            if torch.cuda.is_available():
+                lp_device = kwargs.get("lp_device", "cuda:0")
+            else:
+                lp_device = kwargs.get("lp_device", "cpu")
+
+            if self.lp_checkpoint_S is None or self.lp_models_yaml is None:
+                print("[LP-Retarget] lp_checkpoint_S / lp_models_yaml must be provided. Disable.")
+                self.lp_retarget_enable = False
+            else:
+                self.lp_retargeter = LPRetargetingAdapter(
+                    checkpoint_S=self.lp_checkpoint_S,
+                    models_yaml=self.lp_models_yaml,
+                    device=lp_device,
+                )
+                print(f"[LP-Retarget] enabled. apply_to={self.lp_apply_to}, "
+                      f"eye_target={self.lp_target_eye_ratio}, lip_target={self.lp_target_lip_ratio}, "
+                      f"first_n={self.lp_first_n}, fade_n={self.lp_fade_n}, device={lp_device}")
+
+            # setup() 안, [LP-Retarget] enabled 로그 찍은 직후 추천
+            if self.lp_retarget_enable:
+                if "lmk_crop" not in source_info or source_info["lmk_crop"] is None:
+                    t0 = time.perf_counter()
+                    try:
+                        crop_cfg = CropConfig()
+
+                        # (선택) ditto crop 파라미터와 최대한 맞추고 싶으면 아래처럼 덮어쓰기
+                        crop_cfg.dsize = 512
+                        crop_cfg.scale = getattr(self, "crop_scale", crop_cfg.scale)
+                        crop_cfg.vx_ratio = getattr(self, "crop_vx_ratio", crop_cfg.vx_ratio)
+                        crop_cfg.vy_ratio = getattr(self, "crop_vy_ratio", crop_cfg.vy_ratio)
+                        crop_cfg.flag_do_rot = getattr(self, "crop_flag_do_rot", crop_cfg.flag_do_rot)
+
+                        # weight 경로 sanity check (없으면 여기서 바로 원인 잡힘)
+                        if not osp.exists(crop_cfg.insightface_root) or not osp.exists(crop_cfg.landmark_ckpt_path):
+                            print(f"[LP-LMK] Missing weights. insightface_root={crop_cfg.insightface_root}, "
+                                f"landmark_ckpt_path={crop_cfg.landmark_ckpt_path}")
+                        else:
+                            # Cropper는 (얼굴검출+landmark runner) 준비
+                            device_id = 0
+                            self.lp_cropper = Cropper(crop_cfg=crop_cfg, device_id=device_id)
+
+                            img0 = source_info["img_rgb_lst"][0]  # reference RGB
+                            crop_ret = self.lp_cropper.crop_source_image(img0, crop_cfg)  # lmk_crop 생성 :contentReference[oaicite:12]{index=12}
+
+                            if crop_ret is None:
+                                print("[LP-LMK] crop_source_image returned None (face not detected?)")
+                            else:
+                                source_info["lmk_crop"] = crop_ret["lmk_crop"]
+                                print(f"[LP-LMK] injected lmk_crop shape={source_info['lmk_crop'].shape}, "
+                                    f"setup_time={(time.perf_counter()-t0)*1000:.1f}ms")
+                    except Exception as e:
+                        print("[LP-LMK] landmark setup failed:", e)
+                        traceback.print_exc()
+
+        # =========================
+        
 
         # ======== Setup Condition Handler ========
         self.condition_handler.setup(source_info, self.emo, eye_f0_mode=self.eye_f0_mode, ch_info=self.ch_info)
@@ -292,6 +477,37 @@ class StreamSDK:
             'putback_total_ms': 0.0,  # total time for putback
             'stitch_total_ms': 0.0,  # total time for stitch
         }
+
+    def _lp_get_source_lmk(self, frame_idx: int):
+        """
+        AvatarRegistrar가 반환한 source_info 안에서 landmarks를 찾아온다.
+        (프로젝트마다 키 이름이 다를 수 있으니 가능한 후보를 폭넓게 체크)
+        """
+        si = self.source_info
+
+        for key in ["lmk_crop_lst", "lmk_lst", "lmks", "landmarks_lst"]:
+            if key in si:
+                v = si[key]
+                if isinstance(v, list):
+                    return v[frame_idx]
+                else:
+                    return v[frame_idx]
+
+        for key in ["lmk_crop", "lmk", "landmarks"]:
+            if key in si:
+                return si[key]
+
+        return None
+
+    def _lp_weight(self, fid: int) -> float:
+        """
+        초반 first_n 프레임에 1.0, 이후 fade_n 동안 선형 감소, 그 뒤 0.0
+        """
+        if fid < self.lp_first_n:
+            return 1.0
+        if self.lp_fade_n > 0 and fid < self.lp_first_n + self.lp_fade_n:
+            return 1.0 - (fid - self.lp_first_n) / float(self.lp_fade_n)
+        return 0.0
 
     def _get_ctrl_info(self, fid):
         try:
@@ -429,6 +645,85 @@ class StreamSDK:
             t_start = time.perf_counter()
             x_s, x_d = self.motion_stitch(x_s_info, x_d_info, **ctrl_kwargs)    # 최종 keypoints
             self.timing_stats['stitch_total_ms'] += (time.perf_counter() - t_start) * 1000
+
+            # =========================
+            # LivePortrait retargeting apply (in implicit-keypoints space)
+            # =========================
+            if getattr(self, "lp_retarget_enable", False):
+                fid = self.lp_retarget_fid
+                self.lp_retarget_fid += 1
+
+                w = self._lp_weight(fid)
+                if w > 0:
+                    # delta가 아직 없으면(첫 적용 순간) 1회만 계산해서 캐싱
+                    if self.lp_retarget_delta is None:
+                        # source_lmk = self._lp_get_source_lmk(frame_idx)
+                        # if source_lmk is None:
+                        #     print("[LP-Retarget] source landmarks not found in source_info. Disable retargeting.")
+                        #     self.lp_retarget_enable = False
+                        # else:
+                        #     # x_s/x_d 타입이 torch일 때를 기본으로 (대부분 warp_f3d가 torch 기반)
+                        #     if not isinstance(x_s, torch.Tensor):
+                        #         # numpy라면 torch로 올려서 delta 계산 후 다시 numpy로 변환
+                        #         x_s_t = torch.from_numpy(x_s).float().to(self.lp_retargeter.device)
+                        #     else:
+                        #         x_s_t = x_s.to(self.lp_retargeter.device)
+
+                        #     # 공식 wrapper 흐름: combined ratio → retarget_eye/lip
+                        #     ce = self.lp_retargeter.calc_combined_eye_ratio(self.lp_target_eye_ratio, source_lmk)
+                        #     cl = self.lp_retargeter.calc_combined_lip_ratio(self.lp_target_lip_ratio, source_lmk)
+                        #     de = self.lp_retargeter.retarget_eye(x_s_t, ce)  # (B,K,3)
+                        #     dl = self.lp_retargeter.retarget_lip(x_s_t, cl)  # (B,K,3)
+                        #     self.lp_retarget_delta = (de + dl)               # (B,K,3)
+                        source_lmk = self._lp_get_source_lmk(frame_idx)
+
+                        # x_s 텐서 준비
+                        if not isinstance(x_s, torch.Tensor):
+                            x_s_t = torch.from_numpy(x_s).float().to(self.lp_retargeter.device)
+                        else:
+                            x_s_t = x_s.to(self.lp_retargeter.device)
+
+                        # --- Eye delta 계산 (landmark 있으면 landmark, 없으면 eye_open_lst fallback) ---
+                        if source_lmk is not None:
+                            ce = self.lp_retargeter.calc_combined_eye_ratio(self.lp_target_eye_ratio, source_lmk)
+                        else:
+                            if "eye_open_lst" not in self.source_info:
+                                print("[LP-Retarget] no landmarks AND no eye_open_lst. Disable retargeting.")
+                                self.lp_retarget_enable = False
+                                ce = None
+                            else:
+                                eye_open = self.source_info["eye_open_lst"][frame_idx]  # (1,2)
+                                ce = self.lp_retargeter.calc_combined_eye_ratio_from_eye_open(self.lp_target_eye_ratio, eye_open)
+                                print(f"[LP-Retarget] landmark missing -> eye_open fallback used. eye_open={eye_open}, target={self.lp_target_eye_ratio}")
+
+                        if ce is not None:
+                            de = self.lp_retargeter.retarget_eye(x_s_t, ce)  # (B,K,3)
+
+                            # --- Lip은 landmark 없으면 안전하게 skip(0) ---
+                            if source_lmk is not None:
+                                cl = self.lp_retargeter.calc_combined_lip_ratio(self.lp_target_lip_ratio, source_lmk)
+                                dl = self.lp_retargeter.retarget_lip(x_s_t, cl)  # (B,K,3)
+                            else:
+                                dl = torch.zeros_like(de)
+
+                            self.lp_retarget_delta = (de + dl)
+
+                    if self.lp_retarget_delta is not None:
+                        # delta를 x_s/x_d 타입에 맞춰 적용
+                        if isinstance(x_d, torch.Tensor):
+                            delta = self.lp_retarget_delta.to(device=x_d.device, dtype=x_d.dtype)
+                            if self.lp_apply_to == "source":
+                                x_s = x_s + w * delta
+                            else:
+                                x_d = x_d + w * delta
+                        else:
+                            # numpy일 경우
+                            delta_np = self.lp_retarget_delta.detach().cpu().numpy().astype(np.float32)
+                            if self.lp_apply_to == "source":
+                                x_s = x_s + w * delta_np
+                            else:
+                                x_d = x_d + w * delta_np
+            # =========================
             
             self.warp_f3d_queue.put([frame_idx, x_s, x_d])    # ← warping 단계로 넘김 / ⭐️ 여기서 x_s/x_d에 → retargeting Δ를 더해주기
 
