@@ -7,8 +7,9 @@ import torch
 import pickle
 import time
 
-from stream_pipeline_offline import StreamSDK
+# from stream_pipeline_offline import StreamSDK
 # from stream_pipeline_offline_retargeting import StreamSDK
+from stream_pipeline_offline_faster import StreamSDK
 
 def seed_everything(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -174,7 +175,7 @@ if __name__ == "__main__":
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
     # parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/experiments/ditto_original_hdtf_20251221_234237/weights/train_99.pt", help="path to trained checkpoint (overrides pkl model_path)")
     parser.add_argument("--checkpoint_path", type=str, default=None, help="path to trained checkpoint (overrides pkl model_path)")
-    parser.add_argument("--use_meanflow", type=bool, default=True, help="Use MeanFlow (1-step) instead of DDIM diffusion") # True: MeanFlow (1-step), False: DDIM diffusion
+    parser.add_argument("--use_meanflow", type=bool, default=False, help="Use MeanFlow (1-step) instead of DDIM diffusion")     # True: MeanFlow (1-step), False: DDIM diffusion
     parser.add_argument("--meanflow_mode", type=str, default="improved", choices=["meanflow", "improved"],
                        help="MeanFlow mode: 'meanflow' (original) or 'improved' (default: improved)")
 
@@ -182,7 +183,7 @@ if __name__ == "__main__":
     # parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
     parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/obama_10s.wav") # Shaheen obama
     parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/obama.png")
-    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/ditto_original_output/sample.mp4") # iMF meanflow original / mf15s_trt imf15s_trt ditto15s_trt
+    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/ditto_original_output/sample_faster.mp4") # iMF meanflow original / mf15s_trt imf15s_trt ditto15s_trt
     args = parser.parse_args()
 
     # init sdk

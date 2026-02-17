@@ -7,8 +7,9 @@ import torch
 import pickle
 import time
 
-from stream_pipeline_offline import StreamSDK
+# from stream_pipeline_offline import StreamSDK
 # from stream_pipeline_offline_retargeting import StreamSDK
+from stream_pipeline_offline_faster import StreamSDK
 
 
 
@@ -143,9 +144,13 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
     # 주의: 이들은 파이프라인으로 병렬 처리되므로 합계는 실제 경과 시간보다 큼
     warp_total_ms = timing_stats.get("warp_total_ms", 0.0) or 0.0
     decode_total_ms = timing_stats.get("decode_total_ms", 0.0) or 0.0
+    trt_render_total_ms = timing_stats.get("trt_render_total_ms", 0.0) or 0.0
     stitch_total_ms = timing_stats.get("stitch_total_ms", 0.0) or 0.0
     putback_total_ms = timing_stats.get("putback_total_ms", 0.0) or 0.0
     writer_total_ms = timing_stats.get("writer_total_ms", 0.0) or 0.0
+    
+    # FasterLivePortrait(TRT combined) 사용 여부 자동 감지
+    use_trt_combined = (trt_render_total_ms > 0 and warp_total_ms == 0 and decode_total_ms == 0)
     
     # Face Rendering 실제 경과 시간은 Inference Time - Audio2Feat - DiT 시간
     # (단, 일부 오버랩이 있을 수 있음)
@@ -155,7 +160,10 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
         face_rendering_wallclock_time = inference_time - audio2feat_time
     
     # 각 모듈별 순수 작업 시간 합계 (병렬 처리 고려 X, 참고용)
-    face_rendering_sum_time = (warp_total_ms + decode_total_ms + stitch_total_ms + putback_total_ms + writer_total_ms) / 1000.0
+    if use_trt_combined:
+        face_rendering_sum_time = (trt_render_total_ms + stitch_total_ms + putback_total_ms + writer_total_ms) / 1000.0
+    else:
+        face_rendering_sum_time = (warp_total_ms + decode_total_ms + stitch_total_ms + putback_total_ms + writer_total_ms) / 1000.0
 
     # ffmpeg muxing 시간 측정
     mux_start = time.perf_counter()
@@ -231,8 +239,11 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
     print(f"    🎨 Face Rendering (실제 경과 시간)                          : {face_rendering_wallclock_time:.3f}s")
     
     if motion_dit_time is not None:
-        print(f"      ├─ Warp     : {warp_total_ms/1000.0:.3f}s")
-        print(f"      ├─ Decode   : {decode_total_ms/1000.0:.3f}s")
+        if use_trt_combined:
+            print(f"      ├─ TRT Render (Warp+Decode) : {trt_render_total_ms/1000.0:.3f}s")
+        else:
+            print(f"      ├─ Warp     : {warp_total_ms/1000.0:.3f}s")
+            print(f"      ├─ Decode   : {decode_total_ms/1000.0:.3f}s")
         print(f"      ├─ Stitch   : {stitch_total_ms/1000.0:.3f}s")
         print(f"      ├─ Putback  : {putback_total_ms/1000.0:.3f}s")
         print(f"      └─ Writer   : {writer_total_ms/1000.0:.3f}s (순수 작업 시간, 진행 표시줄은 대기 시간 포함)")        
@@ -289,9 +300,9 @@ if __name__ == "__main__":
     parser.add_argument("--data_root", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_trt_Ampere_Plus", help="path to trt data_root")    # tensorrt model
 
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_pytorch.pkl", help="path to cfg_pkl")          # pytorch model
-    parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl", help="path to cfg_pkl")    # ditto tensorrt model
-    # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
-    # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_iMF.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
+    # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl", help="path to cfg_pkl")    # ditto tensorrt model
+    parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
+    # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_iMF.pkl", help="path to cfg_pkl")    # improved meanflow tensorrt model
 
 
     # parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/experiments/ditto_meanflow_hdtf_20251229_225128/samples/train_100.pt", help="path to trained checkpoint (overrides pkl model_path)")
@@ -301,9 +312,9 @@ if __name__ == "__main__":
 
     # parser.add_argument("--audio_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/audio.wav")
     # parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
-    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/Shaheen_10s.wav")
+    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/Shaheen_10s.wav") # Shaheen obama
     parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/Shaheen.png")
-    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/sample.mp4") # tensorrt/ ditto_meanflow_output/ditto_original_output/ ditto_retargeting10step
+    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/sample_faster.mp4") # tensorrt/ ditto_meanflow_output/ditto_original_output/ ditto_retargeting10step
     args = parser.parse_args()
 
     # init sdk
@@ -311,7 +322,7 @@ if __name__ == "__main__":
     cfg_pkl = args.cfg_pkl     # cfg pkl
     # SDK = StreamSDK(cfg_pkl, data_root)
     # checkpoint_path가 지정되면 새로 학습한 가중치로 대체
-    use_meanflow = False  # True: MeanFlow (1-step), False: DDIM diffusion
+    use_meanflow = True  # True: MeanFlow (1-step), False: DDIM diffusion
     if args.checkpoint_path:
         SDK = StreamSDK(cfg_pkl, data_root, checkpoint_path=args.checkpoint_path, use_meanflow=use_meanflow)
     else:
