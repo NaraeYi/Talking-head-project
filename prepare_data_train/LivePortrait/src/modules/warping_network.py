@@ -8,7 +8,8 @@ keypoint representations x_s and x_d, and employs this flow field to warp the so
 from torch import nn
 import torch.nn.functional as F
 from .util import SameBlock2d
-from .dense_motion import DenseMotionNetwork
+# from .dense_motion import DenseMotionNetwork
+from .dense_motion_light import DenseMotionNetworkLight
 
 
 class WarpingNetwork(nn.Module):
@@ -29,7 +30,7 @@ class WarpingNetwork(nn.Module):
         self.flag_use_occlusion_map = kwargs.get('flag_use_occlusion_map', True)
 
         if dense_motion_params is not None:
-            self.dense_motion_network = DenseMotionNetwork(
+            self.dense_motion_network = DenseMotionNetworkLight(
                 num_kp=num_kp,
                 feature_channel=reshape_channel,
                 estimate_occlusion_map=estimate_occlusion_map,

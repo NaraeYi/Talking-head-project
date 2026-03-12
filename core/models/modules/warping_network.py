@@ -9,6 +9,7 @@ from torch import nn
 import torch.nn.functional as F
 from .util import SameBlock2d
 from .dense_motion import DenseMotionNetwork
+# from .dense_motion_light import DenseMotionNetworkLight
 
 
 class WarpingNetwork(nn.Module):

@@ -9,8 +9,10 @@ import time
 
 # from stream_pipeline_offline import StreamSDK
 # from stream_pipeline_offline_retargeting import StreamSDK
-from stream_pipeline_offline_faster import StreamSDK
-
+# from stream_pipeline_offline_faster import StreamSDK
+from stream_pipeline_offline_retargeting_faster import StreamSDK
+# from stream_pipeline_offline_retargeting_faster_2 import StreamSDK
+# from stream_pipeline_offline_retargeting_faster_3 import StreamSDK
 
 
 def seed_everything(seed):
@@ -42,25 +44,25 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
     run_kwargs = more_kwargs.get("run_kwargs", {})
 
     # retargeting 설정
-    # setup_kwargs.update({
-    #     "lp_retarget_enable": True,
-    #     # LivePortrait에서 받은 retargeting weight (stitching+retargeting 합쳐진 pth)
-    #     "lp_checkpoint_S": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/pretrained_weights/stitching_retargeting_module.pth",
-    #     # LivePortrait src/config/models.yaml 경로
-    #     "lp_models_yaml": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/src/config/models.yaml",
-    #     # 목표 상태
-    #     "lp_target_eye_ratio": 0.39,    # 눈을 더 뜨게(보수적으로 0.39~0.5 추천)
-    #     "lp_target_lip_ratio": 0.0,     # 입 닫기
-    #     # 초반 몇 프레임만 적용하고 싶으면
-    #     "lp_first_n": 10000,
-    #     "lp_fade_n": 10,
+    setup_kwargs.update({
+        "lp_retarget_enable": True,
+        # LivePortrait에서 받은 retargeting weight (stitching+retargeting 합쳐진 pth)
+        "lp_checkpoint_S": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/pretrained_weights/stitching_retargeting_module.pth",
+        # LivePortrait src/config/models.yaml 경로
+        "lp_models_yaml": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/src/config/models.yaml",
+        # 목표 상태
+        "lp_target_eye_ratio": 0.39,    # 눈을 더 뜨게(보수적으로 0.39~0.5 추천)
+        "lp_target_lip_ratio": 0.0,     # 입 닫기
+        # 초반 몇 프레임만 적용하고 싶으면
+        "lp_first_n": 10000,
+        "lp_fade_n": 10,
 
-    #     # baseline이 전체 구간에서 계속 감긴다면 first_n만으로는 다시 감길 수 있음
-    #     # 그 경우 first_n을 크게 잡거나, fade_n=0으로 길게 유지해보는 게 맞음
+        # baseline이 전체 구간에서 계속 감긴다면 first_n만으로는 다시 감길 수 있음
+        # 그 경우 first_n을 크게 잡거나, fade_n=0으로 길게 유지해보는 게 맞음
 
-    #     "lp_apply_to": "driving",       # 권장
-    #     "lp_device": "cuda:0",
-    # })
+        "lp_apply_to": "driving",       # 권장
+        "lp_device": "cuda:0",
+    })
 
     # Setup 시간 측정
     setup_start = time.perf_counter() #
@@ -246,8 +248,26 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
             print(f"      ├─ Decode   : {decode_total_ms/1000.0:.3f}s")
         print(f"      ├─ Stitch   : {stitch_total_ms/1000.0:.3f}s")
         print(f"      ├─ Putback  : {putback_total_ms/1000.0:.3f}s")
-        print(f"      └─ Writer   : {writer_total_ms/1000.0:.3f}s (순수 작업 시간, 진행 표시줄은 대기 시간 포함)")        
-    print(f"    📝 Inference Total                                            : {inference_time:.3f}s")
+        print(f"      └─ Writer   : {writer_total_ms/1000.0:.3f}s (순수 작업 시간, 진행 표시줄은 대기 시간 포함)")
+    print(f"  📝 Inference Total                                            : {inference_time:.3f}s")
+    print()
+    # Retargeting 시간 출력
+    retarget_setup_ms = timing_stats.get("retarget_setup_total_ms", 0.0) or 0.0
+    retarget_delta_calc_ms = timing_stats.get("retarget_delta_calc_total_ms", 0.0) or 0.0
+    retarget_apply_ms = timing_stats.get("retarget_apply_total_ms", 0.0) or 0.0
+    retarget_apply_count = timing_stats.get("retarget_apply_count", 0)
+    
+    if retarget_setup_ms > 0 or retarget_delta_calc_ms > 0 or retarget_apply_ms > 0:
+        print()
+        print("🎯 Retargeting 시간:")
+        # lmk_crop이 이미 있어도 항상 Setup 라인은 0.000s 형태로 출력
+        print(f"    ├─ Setup (Cropper init + lmk_crop 생성)              : {retarget_setup_ms/1000.0:.3f}s")
+        if retarget_delta_calc_ms > 0:
+            print(f"    ├─ Delta 계산 (1회만 수행)                            : {retarget_delta_calc_ms/1000.0:.3f}s")
+        if retarget_apply_ms > 0:
+            avg_apply_ms = retarget_apply_ms / retarget_apply_count if retarget_apply_count > 0 else 0
+            print(f"    ├─ Delta 적용 (모든 프레임)                          : {retarget_apply_ms/1000.0:.3f}s")
+            print(f"    └─ 평균 적용 시간/프레임                              : {avg_apply_ms:.3f}ms/frame ({retarget_apply_count} frames)")
     print()
     print(f"  🔧 Muxing Time (ffmpeg 오디오/비디오 합성)                    : {mux_time:.3f}s")
     print("-" * 80)
@@ -284,12 +304,17 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
     # Rendering 시간 (Face Rendering 실제 경과 시간)
     rendering_time = face_rendering_wallclock_time
     
+    # 전체 시간 구성 요소
+    # Total Time = Setup + Audio2Feat + Motion Generation + Rendering + Muxing
+    total_breakdown = setup_time + audio2feat_time + motion_gen_time + rendering_time + mux_time
+    
     # 출력 형식
     if use_meanflow_flag:
-        print(f"MF (1 step) = motion generation ({motion_gen_time:.3f}s) + rendering ({rendering_time:.3f}s)")
+        print(f"MF (1 step) = setup ({setup_time:.3f}s) + audio2feat ({audio2feat_time:.3f}s) + motion generation ({motion_gen_time:.3f}s) + rendering ({rendering_time:.3f}s) + muxing ({mux_time:.3f}s) = {total_breakdown:.3f}s")
     else:
         steps_str = f"{sampling_timesteps_val} steps" if sampling_timesteps_val else "N steps"
-        print(f"Ditto ({steps_str}) = motion generation ({motion_gen_time:.3f}s) + rendering ({rendering_time:.3f}s)")
+        print(f"Ditto ({steps_str}) = setup ({setup_time:.3f}s) + audio2feat ({audio2feat_time:.3f}s) + motion generation ({motion_gen_time:.3f}s) + rendering ({rendering_time:.3f}s) + muxing ({mux_time:.3f}s) = {total_breakdown:.3f}s")
+    print(f"Total Time (measured): {total_time:.3f}s")
     print("=" * 80)
 
 
@@ -300,8 +325,8 @@ if __name__ == "__main__":
     parser.add_argument("--data_root", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_trt_Ampere_Plus", help="path to trt data_root")    # tensorrt model
 
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_pytorch.pkl", help="path to cfg_pkl")          # pytorch model
-    # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl", help="path to cfg_pkl")    # ditto tensorrt model
-    parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
+    parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl", help="path to cfg_pkl")    # ditto tensorrt model
+    # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_iMF.pkl", help="path to cfg_pkl")    # improved meanflow tensorrt model
 
 
@@ -314,7 +339,7 @@ if __name__ == "__main__":
     # parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
     parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/Shaheen_10s.wav") # Shaheen obama
     parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/Shaheen.png")
-    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/sample_faster.mp4") # tensorrt/ ditto_meanflow_output/ditto_original_output/ ditto_retargeting10step
+    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/sample_retargeting_faster_writer_light.mp4") # tensorrt/ ditto_meanflow_output/ditto_original_output/ ditto_retargeting10step
     args = parser.parse_args()
 
     # init sdk
@@ -322,7 +347,7 @@ if __name__ == "__main__":
     cfg_pkl = args.cfg_pkl     # cfg pkl
     # SDK = StreamSDK(cfg_pkl, data_root)
     # checkpoint_path가 지정되면 새로 학습한 가중치로 대체
-    use_meanflow = True  # True: MeanFlow (1-step), False: DDIM diffusion
+    use_meanflow = False  # True: MeanFlow (1-step), False: DDIM diffusion
     if args.checkpoint_path:
         SDK = StreamSDK(cfg_pkl, data_root, checkpoint_path=args.checkpoint_path, use_meanflow=use_meanflow)
     else:

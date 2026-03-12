@@ -235,7 +235,7 @@ class OnnxRuntimePredictor:
 
 class OnnxRuntimePredictorSingleton(OnnxRuntimePredictor):
     """
-    单例模式，防止模型被加载多次
+    싱글 모드, 모델이 여러 번 로드되는 것을 방지
     """
     _instance_lock = threading.Lock()
     _instance = {}

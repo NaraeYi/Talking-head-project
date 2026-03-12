@@ -76,8 +76,8 @@ class TrainOptions(PrintableConfig):
     dim_ws_npy: str = ""    ###  dim_ws npy
 
     # checkpoint: str = "None"
-    # checkpoint: str = "/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_pytorch/models/lmdm_v0.4_hubert.pth"
-    checkpoint: str = "/workspace/ditto/ditto-talkinghead-train/experiments/ditto_improved_meanflow_hdtf_20260115_180331/weights/train_92.pt"
+    checkpoint: str = "/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_pytorch/models/lmdm_v0.4_hubert.pth"
+    # checkpoint: str = "/workspace/ditto/ditto-talkinghead-train/experiments/ditto_improved_meanflow_hdtf_20260115_180331/weights/train_92.pt"
 
     save_ckpt_freq: int = 1    # save ckpt freq (epoch)
 
