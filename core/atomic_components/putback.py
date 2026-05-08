@@ -17,10 +17,24 @@ class PutBackNumpy:
             self.mask_ori_float = mask.astype(np.float32) / 255.0
 
     def __call__(self, frame_rgb, render_image, M_c2o):
+        # frame_rgb = np.ascontiguousarray(frame_rgb)
+        # render_image = np.ascontiguousarray(render_image)
+
         h, w = frame_rgb.shape[:2]
         mask_warped = cv2.warpAffine(
             self.mask_ori_float, M_c2o[:2, :], dsize=(w, h), flags=cv2.INTER_LINEAR
         ).clip(0, 1)
+        # mask_warped = cv2.warpAffine(
+        #     self.mask_ori_float,
+        #     M_c2o[:2, :],
+        #     dsize=(w, h),
+        #     flags=cv2.INTER_NEAREST,            # ★ 마스크만 nearest
+        #     borderMode=cv2.BORDER_CONSTANT,
+        #     borderValue=0.0,
+        # )
+        # # clip은 유지해도 되지만, borderValue=0이면 보통 필요가 줄어듦
+        # mask_warped = mask_warped.clip(0, 1)
+
         frame_warped = cv2.warpAffine(
             render_image, M_c2o[:2, :], dsize=(w, h), flags=cv2.INTER_LINEAR
         )
@@ -47,12 +61,16 @@ class PutBack:
     def __call__(self, frame_rgb, render_image, M_c2o):
         h, w = frame_rgb.shape[:2]
         mask_warped = cv2.warpAffine(
-            self.mask_ori_float, M_c2o[:2, :], dsize=(w, h), flags=cv2.INTER_LINEAR
+            # self.mask_ori_float, M_c2o[:2, :], dsize=(w, h), flags=cv2.INTER_LINEAR
+            self.mask_ori_float, M_c2o[:2, :], dsize=(w, h), flags=cv2.INTER_NEAREST
         ).clip(0, 1)
         frame_warped = cv2.warpAffine(
-            render_image, M_c2o[:2, :], dsize=(w, h), flags=cv2.INTER_LINEAR
+            # render_image, M_c2o[:2, :], dsize=(w, h), flags=cv2.INTER_LINEAR
+            render_image, M_c2o[:2, :], dsize=(w, h), flags=cv2.INTER_NEAREST
         )
         self.result_buffer = np.empty((h, w, 3), dtype=np.uint8)
+        # if self.result_buffer is None or self.result_buffer.shape != (h, w, 3):
+        #     self.result_buffer = np.empty((h, w, 3), dtype=np.uint8)
 
         # Use Cython implementation for blending
         blend_images_cy(mask_warped, frame_warped, frame_rgb, self.result_buffer)

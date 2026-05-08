@@ -15,22 +15,9 @@ from ..options.option import TrainOptions
 import sys
 import os
 
-# Try to import StreamSDK for sample generation
-try:
-    # trainer.py is at: MotionDiT/src/trainers/trainer.py
-    # stream_pipeline_offline.py is at: ditto-talkinghead-train/stream_pipeline_offline.py
-    # Need to go up 4 levels: trainers -> src -> MotionDiT -> ditto-talkinghead-train
-    ditto_train_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    print(f"[DEBUG] ditto_train_dir: {ditto_train_dir}")
-    if ditto_train_dir not in sys.path:
-        sys.path.insert(0, ditto_train_dir)
-    from stream_pipeline_offline import StreamSDK
-    STREAM_SDK_AVAILABLE = True
-    print("[INFO] StreamSDK imported successfully for sample generation")
-except ImportError as e:
-    STREAM_SDK_AVAILABLE = False
-    print(f"[WARNING] StreamSDK not available - sample video generation disabled: {e}")
-    StreamSDK = None  # placeholder
+# epoch sample: import StreamSDK lazily so inference/CUDA helpers do not run before DDP setup.
+STREAM_SDK_AVAILABLE = None
+StreamSDK = None
 import librosa
 import math
 
@@ -47,6 +34,29 @@ import datetime
 from datetime import timezone, timedelta  # 서버시간대X, 한국시간대
 
 
+def _get_stream_sdk():
+    # epoch sample: keep the heavy inference stack out of distributed initialization.
+    global STREAM_SDK_AVAILABLE, StreamSDK
+    if STREAM_SDK_AVAILABLE is not None:
+        return StreamSDK if STREAM_SDK_AVAILABLE else None
+
+    try:
+        # trainer.py is at: MotionDiT/src/trainers/trainer.py
+        # stream_pipeline_offline.py is at: ditto-talkinghead-train/stream_pipeline_offline.py
+        ditto_train_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        if ditto_train_dir not in sys.path:
+            sys.path.insert(0, ditto_train_dir)
+        from stream_pipeline_offline import StreamSDK as _StreamSDK
+        StreamSDK = _StreamSDK
+        STREAM_SDK_AVAILABLE = True
+        print("[INFO] StreamSDK imported successfully for sample generation")
+    except ImportError as e:
+        STREAM_SDK_AVAILABLE = False
+        StreamSDK = None
+        print(f"[WARNING] StreamSDK not available - sample video generation disabled: {e}")
+    return StreamSDK
+
+
 class Trainer:
     def __init__(self, opt: TrainOptions):
         self.opt = opt
@@ -58,9 +68,12 @@ class Trainer:
 
         print(time.asctime(), '_init_LMDM / MeanFlow')
         self.LMDM = self._init_LMDM()
+        self._configure_pose_branch_training()
 
         print(time.asctime(), '_init_dataset')
         self.data_loader = self._init_dataset()
+        # dyn loss: keep a global total-step count ready for optional loss scheduling.
+        self.total_steps = max(1, int(self.opt.epochs) * len(self.data_loader))
 
         print(time.asctime(), '_init_optim')
         self.optim = self._init_optim()
@@ -89,10 +102,15 @@ class Trainer:
     def _set_accelerate(self):
         if self.accelerator is None:
             return
-        
-        self.LMDM.use_accelerator(self.accelerator)
-        self.optim = self.accelerator.prepare(self.optim)
-        self.data_loader = self.accelerator.prepare(self.data_loader)
+
+        # accelerate ddp: train through the diffusion wrapper, so prepare it with optimizer/dataloader together.
+        self.LMDM.diffusion, self.optim, self.data_loader = self.accelerator.prepare(
+            self.LMDM.diffusion,
+            self.optim,
+            self.data_loader,
+        )
+        self.LMDM.model = self.accelerator.unwrap_model(self.LMDM.diffusion).model
+        self.LMDM.device = self.device
 
         self.accelerator.wait_for_everyone()
 
@@ -105,6 +123,8 @@ class Trainer:
         dim_ws = None
         if opt.dim_ws_npy:
             dim_ws = np.load(opt.dim_ws_npy)
+        # accelerate ddp: build on CPU and let Accelerator place the module on each rank.
+        lmdm_device = "cpu" if opt.use_accelerate else self.device
 
         lmdm = LMDM(
                 motion_feat_dim=opt.motion_feat_dim,
@@ -112,15 +132,68 @@ class Trainer:
                 seq_frames=opt.seq_frames,
                 part_w_dict=part_w_dict,   # only for train
                 checkpoint=opt.checkpoint,
-                device=self.device,
+                device=lmdm_device,
                 use_last_frame_loss=opt.use_last_frame_loss,
                 use_reg_loss=opt.use_reg_loss,
                 dim_ws=dim_ws,
                 use_meanflow=self.use_meanflow,
                 meanflow_mode=self.meanflow_mode,
+                use_pose_branch=opt.use_pose_branch,   # pose branch: enable lightweight pose residual adapter.
+                pose_branch_hidden_dim=opt.pose_branch_hidden_dim,
+                pose_branch_dropout=opt.pose_branch_dropout,
+                pose_branch_residual_scale=opt.pose_branch_residual_scale,
+                pose_branch_gate_bias=opt.pose_branch_gate_bias,
+                lambda_pva=opt.lambda_pva,   # dyn loss: expose MeanFlow P/V/A weight as an option.
+                dyn_lambda_var=opt.dyn_lambda_var,   # dyn loss: shared temporal variance auxiliary loss.
+                dyn_lambda_spec=opt.dyn_lambda_spec,   # dyn loss: shared temporal spectrum auxiliary loss.
+                dyn_lambda_diff=opt.dyn_lambda_diff,   # dyn loss: shared temporal diff auxiliary loss.
+                dyn_var_use_log=opt.dyn_var_use_log,
+                dyn_spec_use_log_power=opt.dyn_spec_use_log_power,
+                dyn_spec_highfreq_ratio=opt.dyn_spec_highfreq_ratio,
+                dyn_spec_highfreq_weight=opt.dyn_spec_highfreq_weight,
+                dyn_diff_velocity_weight=opt.dyn_diff_velocity_weight,
+                dyn_diff_acceleration_weight=opt.dyn_diff_acceleration_weight,
+                dyn_loss_type=opt.dyn_loss_type,
+                dyn_schedule_start_ratio=opt.dyn_schedule_start_ratio,
+                dyn_schedule_end_ratio=opt.dyn_schedule_end_ratio,
+                dyn_schedule_max_value=opt.dyn_schedule_max_value,
+                dyn_active_weighting=opt.dyn_active_weighting,
+                dyn_active_weight_mode=opt.dyn_active_weight_mode,
+                dyn_active_weight_power=opt.dyn_active_weight_power,
+                dyn_active_weight_min=opt.dyn_active_weight_min,
+                dyn_active_weight_max=opt.dyn_active_weight_max,
+                dyn_active_weight_normalize=opt.dyn_active_weight_normalize,
+                dyn_active_weight_detach=opt.dyn_active_weight_detach,
+                dyn_loss_parts=opt.dyn_loss_parts,   # dyn loss: select which motion latent parts receive L_var/L_spec/L_diff
             )
 
         return lmdm
+
+    def _configure_pose_branch_training(self):
+        opt = self.opt
+        if not getattr(opt, "freeze_backbone_for_pose_branch", False):
+            return
+        if not getattr(opt, "use_pose_branch", False):
+            raise ValueError("freeze_backbone_for_pose_branch=True requires use_pose_branch=True")
+
+        trainable_count = 0
+        frozen_count = 0
+        for name, param in self.LMDM.model.named_parameters():
+            is_pose_branch = "pose_branch" in name
+            param.requires_grad = is_pose_branch
+            if is_pose_branch:
+                trainable_count += param.numel()
+            else:
+                frozen_count += param.numel()
+
+        if trainable_count == 0:
+            raise ValueError("No pose_branch parameters found to train.")
+
+        if self.is_main_process:
+            print(
+                "[POSE BRANCH] Frozen backbone parameters: "
+                f"{frozen_count:,}; trainable pose_branch parameters: {trainable_count:,}"
+            )
 
     def _init_dataset(self):
         opt = self.opt
@@ -163,15 +236,33 @@ class Trainer:
     
     def _init_optim(self):
         opt = self.opt
+        trainable_params = [(name, param) for name, param in self.LMDM.model.named_parameters() if param.requires_grad]
+        if not trainable_params:
+            raise ValueError("No trainable parameters found for optimizer.")
+
+        pose_params = [param for name, param in trainable_params if "pose_branch" in name]
+        backbone_params = [param for name, param in trainable_params if "pose_branch" not in name]
+
+        if getattr(opt, "freeze_backbone_for_pose_branch", False):
+            optimizer_params = [{"params": pose_params, "lr": opt.pose_branch_lr}]
+            print(f"[POSE BRANCH] Optimizer trains pose_branch only with lr={opt.pose_branch_lr}")
+        elif pose_params and getattr(opt, "pose_branch_lr", opt.lr) != opt.lr:
+            optimizer_params = [
+                {"params": backbone_params, "lr": opt.lr},
+                {"params": pose_params, "lr": opt.pose_branch_lr},
+            ]
+            print(f"[POSE BRANCH] Optimizer lr groups: backbone={opt.lr}, pose_branch={opt.pose_branch_lr}")
+        else:
+            optimizer_params = [param for _, param in trainable_params]
         
         # Optimizer 선택 (MeanFlow 논문 권장: Adam with lr=1e-4)
         optimizer_type = getattr(opt, 'optimizer', 'adan').lower()
         if optimizer_type == "adam":
             import torch.optim as optim_module
-            optim = optim_module.Adam(self.LMDM.model.parameters(), lr=opt.lr, weight_decay=0.02)
+            optim = optim_module.Adam(optimizer_params, lr=opt.lr, weight_decay=0.02)
             print(f"[OPTIMIZER] Using Adam with lr={opt.lr}")
         else:
-            optim = Adan(self.LMDM.model.parameters(), lr=opt.lr, weight_decay=0.02)
+            optim = Adan(optimizer_params, lr=opt.lr, weight_decay=0.02)
             print(f"[OPTIMIZER] Using Adan with lr={opt.lr}")
 
         ##### Load optimizer state from checkpoint if available 체크포인트 로딩 (_init_optim)
@@ -179,8 +270,17 @@ class Trainer:
             try:
                 ckpt = torch.load(opt.checkpoint, map_location='cpu')
                 if 'optimizer_state_dict' in ckpt:
-                    optim.load_state_dict(ckpt['optimizer_state_dict'])
-                    print(f"[RESUME] Optimizer state loaded from {opt.checkpoint}")
+                    ckpt_groups = ckpt['optimizer_state_dict'].get('param_groups', [])
+                    cur_groups = optim.state_dict().get('param_groups', [])
+                    groups_match = (
+                        len(ckpt_groups) == len(cur_groups)
+                        and all(len(a.get('params', [])) == len(b.get('params', [])) for a, b in zip(ckpt_groups, cur_groups))
+                    )
+                    if groups_match:
+                        optim.load_state_dict(ckpt['optimizer_state_dict'])
+                        print(f"[RESUME] Optimizer state loaded from {opt.checkpoint}")
+                    else:
+                        print("[RESUME] Optimizer state skipped because trainable parameter groups changed")
                 else:
                     print(f"[WARNING] No optimizer state found in checkpoint: {opt.checkpoint}")
             except Exception as e:
@@ -196,6 +296,8 @@ class Trainer:
         # timestamp = datetime.datetime.now(KST).strftime("%y%m%d_%H%M")
         timestamp = datetime.datetime.now(KST).strftime("%Y%m%d_%H%M%S")
         experiment_name_with_time = f"{opt.experiment_name}_{timestamp}"
+        # epoch sample: keep filesystem experiment names stable while allowing explicit wandb names.
+        wandb_run_name = opt.wandb_run_name.strip() if getattr(opt, "wandb_run_name", "") else experiment_name_with_time
 
         experiment_path = os.path.join(opt.experiment_dir, experiment_name_with_time)
         self.error_log_path = os.path.join(experiment_path, 'error')
@@ -224,9 +326,9 @@ class Trainer:
 
             # Initialize wandb for experiment tracking
             if WANDB_AVAILABLE and wandb is not None:
-                print(f"[WANDB] Initializing wandb - project: {opt.wandb_pj_name}, name: {experiment_name_with_time}")
+                print(f"[WANDB] Initializing wandb - project: {opt.wandb_pj_name}, name: {wandb_run_name}")
                 print(f"[WANDB] wandb_log_freq: {opt.wandb_log_freq} iterations")
-                wandb.init(project=opt.wandb_pj_name, name=experiment_name_with_time)
+                wandb.init(project=opt.wandb_pj_name, name=wandb_run_name)
                 print(f"[WANDB] Initialized successfully! Run URL: {wandb.run.url if wandb.run else 'N/A'}")
 
     def _loss_backward(self, loss):
@@ -248,10 +350,25 @@ class Trainer:
             x = x.to(self.device)
             cond_frame = cond_frame.to(self.device)
             cond = cond.to(self.device)
-            loss, loss_dict = self.LMDM.diffusion(x, cond_frame, cond)
+            # dyn loss: forward step information so both original Ditto and MeanFlow
+            # can optionally use schedule-aware auxiliary losses later.
+            loss, loss_dict = self.LMDM.diffusion(
+                x,
+                cond_frame,
+                cond,
+                global_step=self.global_step,
+                total_steps=self.total_steps,
+            )
         else:
             with self.accelerator.autocast():
-                loss, loss_dict = self.LMDM.diffusion(x, cond_frame, cond)
+                # dyn loss: same scheduled-loss interface under autocast.
+                loss, loss_dict = self.LMDM.diffusion(
+                    x,
+                    cond_frame,
+                    cond,
+                    global_step=self.global_step,
+                    total_steps=self.total_steps,
+                )
 
         # Log to wandb at iteration frequency
         if self.is_main_process and WANDB_AVAILABLE and wandb is not None and self.global_step % self.opt.wandb_log_freq == 0:
@@ -291,6 +408,11 @@ class Trainer:
                 ##### Update progress bar with current loss
                 avg_loss = DAM.average()
                 loss_str = f"loss: {avg_loss.get('total_loss', 0):.4f}"
+                # dyn loss: surface auxiliary totals in the progress bar for quick checks.
+                if 'dyn_total' in avg_loss:
+                    loss_str += f" | dyn: {avg_loss['dyn_total']:.4f}"
+                if 'pva_total' in avg_loss:
+                    loss_str += f" | pva: {avg_loss['pva_total']:.4f}"
                 if 'pva_loss' in avg_loss:
                     loss_str += f" | pva: {avg_loss['pva_loss']:.4f}"
                 if 'last_frame_loss' in avg_loss:
@@ -356,14 +478,13 @@ class Trainer:
             else:
                 print(f"Epoch {epoch}: Loss = {DAM.average().get('total_loss', 'N/A'):.6f}")
 
-        ##### generate sample video if enabled
-        if hasattr(self.opt, 'sample_interval') and self.opt.sample_interval > 0:
-            if epoch % self.opt.sample_interval == 0:
-                try:
-                    self.generate_sample_video(self.opt, epoch)
-                except Exception as e:
-                    print(f"[WARNING] Failed to generate sample video at epoch {epoch}: {e}")
-                    traceback.print_exc()
+        ##### epoch sample: generate one sample video per epoch, or by interval if disabled.
+        if self._should_generate_sample(epoch):
+            try:
+                self.generate_sample_video(self.opt, epoch)
+            except Exception as e:
+                print(f"[WARNING] Failed to generate sample video at epoch {epoch}: {e}")
+                traceback.print_exc()
 
         # clear model
         # if epoch % self.opt.save_ckpt_freq != 0:
@@ -454,6 +575,13 @@ class Trainer:
                 f.write(error_msg)
             print(f'error msg write into {errorfile}')
 
+    def _should_generate_sample(self, epoch):
+        # epoch sample: centralize sample scheduling so every-epoch and interval modes are easy to switch.
+        if getattr(self.opt, "sample_every_epoch", False):
+            return True
+        sample_interval = getattr(self.opt, "sample_interval", 0)
+        return sample_interval > 0 and epoch % sample_interval == 0
+
     ##### Generate sample video for visual evaluation during training
     def generate_sample_video(self, opt, epoch):
         """
@@ -474,8 +602,10 @@ class Trainer:
         if not hasattr(opt, 'sample_data_root') or not opt.sample_data_root:
             return
 
+        StreamSDKCls = _get_stream_sdk()
+
         # Check if StreamSDK is available
-        if not STREAM_SDK_AVAILABLE or StreamSDK is None:
+        if StreamSDKCls is None:
             print("[WARNING] StreamSDK not available - skipping sample video generation")
             return
 
@@ -522,11 +652,18 @@ class Trainer:
             tmp_output_path = os.path.join(sample_dir, f"sample_epoch_{epoch:04d}_tmp.mp4")
 
             # Initialize SDK with current checkpoint
-            SDK = StreamSDK(
+            SDK = StreamSDKCls(
                 opt.sample_cfg_pkl,
                 opt.sample_data_root,
                 checkpoint_path=temp_ckpt_path,
-                use_meanflow=self.use_meanflow  # 학습 모드에 따라 자동 선택
+                use_meanflow=self.use_meanflow,  # 학습 모드에 따라 자동 선택
+                # pose branch: sample inference must build the same decoder
+                # structure as the currently training checkpoint.
+                use_pose_branch=opt.use_pose_branch,
+                pose_branch_hidden_dim=opt.pose_branch_hidden_dim,
+                pose_branch_dropout=opt.pose_branch_dropout,
+                pose_branch_residual_scale=opt.pose_branch_residual_scale,
+                pose_branch_gate_bias=opt.pose_branch_gate_bias,
             )
 
             # Setup SDK
@@ -562,7 +699,11 @@ class Trainer:
             # Log to wandb if available
             if WANDB_AVAILABLE:
                 try:
-                    wandb.log({"sample_video": wandb.Video(output_path, fps=25, format="mp4")})
+                    # epoch sample: log each generated epoch video with its epoch number.
+                    wandb.log({
+                        "sample_video": wandb.Video(output_path, fps=25, format="mp4"),
+                        "sample_epoch": epoch,
+                    }, step=self.global_step)
                 except Exception as e:
                     print(f"[WARNING] Failed to log video to wandb: {e}")
 

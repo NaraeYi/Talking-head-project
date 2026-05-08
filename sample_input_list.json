@@ -1,0 +1,13 @@
+[
+  {
+    "id": "sample_001",
+    "video_path": "/path/to/video_001.mp4",
+    "audio_path": "/path/to/audio_001.wav"
+  },
+  {
+    "id": "sample_002",
+    "video_path": "/path/to/video_002.mp4",
+    "audio_path": "/path/to/audio_002.wav",
+    "ref_image":  "/path/to/ref_002.jpg"
+  }
+]

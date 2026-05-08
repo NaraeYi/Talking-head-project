@@ -94,6 +94,20 @@ def parse_cfg(cfg_pkl, data_root, replace_cfg=None):
     if isinstance(replace_cfg, dict) and "meanflow_mode" in replace_cfg:
         lmdm_cfg["meanflow_mode"] = replace_cfg["meanflow_mode"]
 
+    # pose branch: pass the training-time pose residual adapter options into
+    # the inference LMDM so sampled checkpoints load with the same structure.
+    pose_branch_keys = [
+        "use_pose_branch",
+        "pose_branch_hidden_dim",
+        "pose_branch_dropout",
+        "pose_branch_residual_scale",
+        "pose_branch_gate_bias",
+    ]
+    if isinstance(replace_cfg, dict):
+        for key in pose_branch_keys:
+            if key in replace_cfg:
+                lmdm_cfg[key] = replace_cfg[key]
+
     w2f_type = audio2motion_cfg["w2f_type"]
     wav2feat_cfg = {
         "w2f_cfg": base_cfg["hubert_cfg"] if w2f_type == "hubert" else base_cfg["wavlm_cfg"],

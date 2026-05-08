@@ -54,6 +54,7 @@ from core.atomic_components.motion_stitch import MotionStitch
 # from core.atomic_components.decode_f3d import DecodeF3D
 from core.atomic_components.fasterLP_predictor import TensorRTPredictor  # FasterLivePortrait TRT
 from core.atomic_components.putback import PutBack
+# from core.atomic_components.putback_ROI import PutBackROI
 from core.atomic_components.writer import VideoWriterByImageIO
 # from core.atomic_components.writer_light import VideoWriterByImageIO
 from core.atomic_components.wav2feat import Wav2Feat
@@ -152,6 +153,7 @@ class StreamSDK:
         # self.decode_f3d = DecodeF3D(decoder_cfg)
         
         self.putback = PutBack()
+        # self.putback = PutBackROI()
         # self.putback_torchGPU = PutBackTorchGPU()
         # self.putback_gpu = PutBackTorchGPU(self.putback.mask_ori_float)  # mask 512x512 float32 1ch
         # self.use_gpu_putback = True
@@ -618,7 +620,8 @@ class StreamSDK:
             M_c2o = self.source_info["M_c2o_lst"][frame_idx]
             
             t_start = time.perf_counter()
-            res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)  # OpenCV+cython 경로/ PutBack 호출부
+            # res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)  # OpenCV+cython 경로/ PutBack 호출부
+            res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)  # ROI 경로/ PutBackROI 호출부
             self.timing_stats['putback_total_ms'] += (time.perf_counter() - t_start) * 1000
             
             self.writer_queue.put(res_frame_rgb)

@@ -52,6 +52,9 @@ example/testset/
 example_train/
 sample_output/
 testset_results/
+analysis/
+VideoDit_output/
+dynpose_talk8/
 wandb/
 
 # OS

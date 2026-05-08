@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.func import jvp
 
+from .dynamics_loss import DynamicsMatchingLoss
 
 
 class MotionMeanFlow(nn.Module):
@@ -39,6 +40,7 @@ class MotionMeanFlow(nn.Module):
         detach_cond=True,
         use_r0_recon=False,            # False: x_hat = z - (t-r)*u, True: x_hat = z - t*u
         meanflow_mode="improved",  # "meanflow" or "improved" (default: "improved")
+        dyn_loss_config=None,
     ):
         super().__init__()
         self.model = model
@@ -87,6 +89,17 @@ class MotionMeanFlow(nn.Module):
             self.register_buffer("dim_ws", torch.from_numpy(dim_ws))
         else:
             self.dim_ws = None
+
+        # dyn loss: optional temporal dynamics auxiliaries shared with original Ditto.
+        self.has_dyn_loss = (
+            dyn_loss_config is not None
+            and (
+                dyn_loss_config.lambda_var > 0.0
+                or dyn_loss_config.lambda_spec > 0.0
+                or dyn_loss_config.lambda_diff > 0.0
+            )
+        )
+        self.dyn_loss = DynamicsMatchingLoss(dyn_loss_config) if self.has_dyn_loss else None
     
     def interpolant(self, t):
         """
@@ -208,7 +221,7 @@ class MotionMeanFlow(nn.Module):
 
     # -------------------------- MeanFlow loss -------------------------- #
 
-    def p_losses(self, x, cond_frame, cond):
+    def p_losses(self, x, cond_frame, cond, global_step=None, total_steps=None):
         """
         MeanFlow objective with optional CFG-like target and optional adaptive weighting.
         x: clean motion latent (x0), shape [B,L,D]
@@ -516,18 +529,47 @@ class MotionMeanFlow(nn.Module):
             dim_ws=self.dim_ws,
         )
         loss_pva = sum(loss_dict_pva.values())
-
+        # dyn loss: keep the existing MeanFlow regression loss and optional P/V/A branch.
         total_loss = loss_mf + self.lambda_pva * loss_pva
 
+        # dyn loss: optionally add shared temporal variance / spectrum / diff auxiliaries.
+        dyn_loss_dict = {}
+        if self.dyn_loss is not None:
+            dyn_total, dyn_loss_dict = self.dyn_loss(
+                x_hat,
+                x,
+                global_step=global_step,
+                total_steps=total_steps,
+            )
+            total_loss = total_loss + dyn_total
+
         # logging dict
-        loss_dict = {"mf": loss_mf, **loss_dict_pva}
+        loss_dict = {
+            "mf": loss_mf,
+            "pva_total": loss_pva.detach(),
+            "pva_weighted": (self.lambda_pva * loss_pva).detach(),
+            **loss_dict_pva,
+            **dyn_loss_dict,
+        }
         return total_loss, loss_dict
 
-    def loss(self, x, cond_frame, cond):
-        return self.p_losses(x, cond_frame, cond)
+    def loss(self, x, cond_frame, cond, global_step=None, total_steps=None):
+        return self.p_losses(
+            x,
+            cond_frame,
+            cond,
+            global_step=global_step,
+            total_steps=total_steps,
+        )
 
-    def forward(self, x, cond_frame, cond):
-        return self.loss(x, cond_frame, cond)
+    def forward(self, x, cond_frame, cond, global_step=None, total_steps=None):
+        return self.loss(
+            x,
+            cond_frame,
+            cond,
+            global_step=global_step,
+            total_steps=total_steps,
+        )
 
     # -------------------------- Sampling -------------------------- #
 

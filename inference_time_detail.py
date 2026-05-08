@@ -30,7 +30,7 @@ def load_pkl(pkl):
         return pickle.load(f)
 
 
-def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, more_kwargs: str | dict = {}):
+def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, more_kwargs: str | dict = {}, max_seconds: float = None):
     # 전체 영상 생성 시간 측정 시작
     total_start = time.perf_counter()
     
@@ -71,9 +71,28 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
         torch.cuda.synchronize()
     setup_time = time.perf_counter() - setup_start
 
+    import soundfile as sf
+
     audio, sr = librosa.core.load(audio_path, sr=16000)
+
+    # inference_metric.py와 동일하게 오디오 길이를 고정한다.
+    # 긴 오디오는 자르고, 짧은 오디오는 무음으로 패딩해서
+    # 원하는 길이의 비디오/오디오를 생성한다.
+    audio_modified = False
+    if max_seconds is not None:
+        max_samples = int(max_seconds * 16000)
+        if len(audio) > max_samples:
+            audio = audio[:max_samples]
+            audio_modified = True
+        elif len(audio) < max_samples:
+            pad = np.zeros(max_samples - len(audio), dtype=audio.dtype)
+            audio = np.concatenate([audio, pad], axis=0)
+            audio_modified = True
+        num_f = math.ceil(max_seconds * 25)
+    else:
+        num_f = math.ceil(len(audio) / 16000 * 25)
+
     audio_duration = len(audio) / sr #
-    num_f = math.ceil(len(audio) / 16000 * 25)
 
     fade_in = run_kwargs.get("fade_in", -1)
     fade_out = run_kwargs.get("fade_out", -1)
@@ -167,12 +186,23 @@ def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, mor
     else:
         face_rendering_sum_time = (warp_total_ms + decode_total_ms + stitch_total_ms + putback_total_ms + writer_total_ms) / 1000.0
 
+    # 오디오 준비 (잘랐거나 패딩했으면 임시 파일로 저장)
+    audio_for_merge = audio_path
+    temp_audio_path = None
+    if audio_modified:
+        temp_audio_path = output_path.replace(".mp4", "_temp_audio.wav")
+        sf.write(temp_audio_path, audio, 16000)
+        audio_for_merge = temp_audio_path
+
     # ffmpeg muxing 시간 측정
     mux_start = time.perf_counter()
-    cmd = f'ffmpeg -loglevel error -y -i "{SDK.tmp_output_path}" -i "{audio_path}" -map 0:v -map 1:a -c:v copy -c:a aac "{output_path}"'
+    cmd = f'ffmpeg -loglevel error -y -i "{SDK.tmp_output_path}" -i "{audio_for_merge}" -map 0:v -map 1:a -c:v copy -c:a aac "{output_path}"'
     print(cmd)
     os.system(cmd)
     mux_time = time.perf_counter() - mux_start
+
+    if temp_audio_path and os.path.exists(temp_audio_path):
+        os.remove(temp_audio_path)
 
     # 전체 시간 측정 종료
     total_time = time.perf_counter() - total_start
@@ -325,8 +355,8 @@ if __name__ == "__main__":
     parser.add_argument("--data_root", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_trt_Ampere_Plus", help="path to trt data_root")    # tensorrt model
 
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_pytorch.pkl", help="path to cfg_pkl")          # pytorch model
-    parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl", help="path to cfg_pkl")    # ditto tensorrt model
-    # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
+    # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl", help="path to cfg_pkl")    # ditto tensorrt model
+    parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_iMF.pkl", help="path to cfg_pkl")    # improved meanflow tensorrt model
 
 
@@ -334,24 +364,60 @@ if __name__ == "__main__":
     # parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/experiments/ditto_original_hdtf_20251221_234237/weights/train_99.pt", help="path to trained checkpoint (overrides pkl model_path)")
     parser.add_argument("--checkpoint_path", type=str, default=None, help="path to trained checkpoint (overrides pkl model_path)")  # tensorrt 사용시 None
 
+    # pose branch: keep time-detail inference aligned with pose-branch checkpoints.
+    parser.add_argument("--use_pose_branch", action="store_true", default=False,
+                        help="enable pose branch decoder structure for pose-branch checkpoints")
+    parser.add_argument("--pose_branch_hidden_dim", type=int, default=128,
+                        help="pose branch hidden dimension")
+    parser.add_argument("--pose_branch_dropout", type=float, default=0.0,
+                        help="pose branch dropout")
+    parser.add_argument("--pose_branch_residual_scale", type=float, default=1.0,
+                        help="pose branch residual scale")
+    parser.add_argument("--pose_branch_gate_bias", type=float, default=-2.0,
+                        help="pose branch gate bias")
+
 
     # parser.add_argument("--audio_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/audio.wav")
     # parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
-    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/Shaheen_10s.wav") # Shaheen obama
-    parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/Shaheen.png")
-    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/sample_retargeting_faster_writer_light.mp4") # tensorrt/ ditto_meanflow_output/ditto_original_output/ ditto_retargeting10step
+    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/obama_10s.wav") # Shaheen obama
+    parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/obama.png")
+    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/ditto_mf.mp4") # tensorrt/ ditto_meanflow_output/ditto_original_output/ ditto_retargeting10step
+    parser.add_argument("--max_seconds", type=float, default=10.0, help="maximum audio length in seconds (use 0 for full length)")
     args = parser.parse_args()
+
+    if args.max_seconds <= 0:
+        args.max_seconds = None
 
     # init sdk
     data_root = args.data_root   # model dir
     cfg_pkl = args.cfg_pkl     # cfg pkl
     # SDK = StreamSDK(cfg_pkl, data_root)
     # checkpoint_path가 지정되면 새로 학습한 가중치로 대체
-    use_meanflow = False  # True: MeanFlow (1-step), False: DDIM diffusion
+    use_meanflow = True  # True: MeanFlow (1-step), False: DDIM diffusion
+    # pose branch: forward inference-time architecture flags so timing runs
+    # can render pose-branch checkpoints with the same decoder structure.
+    pose_branch_kwargs = {
+        "use_pose_branch": args.use_pose_branch,
+        "pose_branch_hidden_dim": args.pose_branch_hidden_dim,
+        "pose_branch_dropout": args.pose_branch_dropout,
+        "pose_branch_residual_scale": args.pose_branch_residual_scale,
+        "pose_branch_gate_bias": args.pose_branch_gate_bias,
+    }
     if args.checkpoint_path:
-        SDK = StreamSDK(cfg_pkl, data_root, checkpoint_path=args.checkpoint_path, use_meanflow=use_meanflow)
+        SDK = StreamSDK(
+            cfg_pkl,
+            data_root,
+            checkpoint_path=args.checkpoint_path,
+            use_meanflow=use_meanflow,
+            **pose_branch_kwargs,
+        )
     else:
-        SDK = StreamSDK(cfg_pkl, data_root, use_meanflow=use_meanflow)
+        SDK = StreamSDK(
+            cfg_pkl,
+            data_root,
+            use_meanflow=use_meanflow,
+            **pose_branch_kwargs,
+        )
 
     # input args
     audio_path = args.audio_path    # .wav
@@ -360,4 +426,4 @@ if __name__ == "__main__":
 
     # run
     # seed_everything(1024)
-    run(SDK, audio_path, source_path, output_path)
+    run(SDK, audio_path, source_path, output_path, max_seconds=args.max_seconds)

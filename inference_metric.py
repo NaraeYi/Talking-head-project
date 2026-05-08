@@ -23,7 +23,8 @@ import argparse
 from pathlib import Path
 from tqdm import tqdm
 
-from stream_pipeline_offline import StreamSDK
+# from stream_pipeline_offline import StreamSDK
+from stream_pipeline_offline_retargeting_faster import StreamSDK
 
 
 def seed_everything(seed):
@@ -62,42 +63,70 @@ def get_model_name(checkpoint_path):
     return weight_name
 
 
-def run_single(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, max_seconds: float = None):
+def run_single(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, max_seconds: float = None, more_kwargs: str | dict = {}):
     """단일 클립에 대한 inference 수행
     
     Args:
         max_seconds: 최대 오디오 길이 (초). None이면 전체 길이 사용
     """
     import soundfile as sf
+
+    if isinstance(more_kwargs, str):
+        more_kwargs = load_pkl(more_kwargs)
+    setup_kwargs = more_kwargs.get("setup_kwargs", {})
+    run_kwargs = more_kwargs.get("run_kwargs", {})
     
     tmp_output_path = output_path.replace(".mp4", "_tmp.mp4")
-    
-    SDK.setup(source_path, tmp_output_path)
+
+    # retargeting 설정
+    setup_kwargs.update({
+        "lp_retarget_enable": True,  # True False
+        "lp_checkpoint_S": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/pretrained_weights/stitching_retargeting_module.pth",
+        "lp_models_yaml": "/workspace/ditto/ditto-talkinghead-train/prepare_data_train/LivePortrait/src/config/models.yaml",
+        "lp_target_eye_ratio": 0.39,
+        "lp_target_lip_ratio": 0.0,
+        "lp_first_n": 10000,
+        "lp_fade_n": 10,
+        "lp_apply_to": "driving",
+        "lp_device": "cuda:0",
+    })
+
+    SDK.setup(source_path, tmp_output_path, **setup_kwargs)
     
     audio, sr = librosa.core.load(audio_path, sr=16000)
     
-    # 오디오 길이 제한
-    audio_trimmed = False
+    # 오디오 길이를 max_seconds에 맞춰 고정한다.
+    # MEAD evaluation에서는 4.84s / 121 frames로 통일하고 싶을 때가 많아서,
+    # 긴 오디오는 자르고 짧은 오디오는 무음으로 패딩한다.
+    audio_modified = False
     if max_seconds is not None:
         max_samples = int(max_seconds * 16000)
         if len(audio) > max_samples:
             audio = audio[:max_samples]
-            audio_trimmed = True
+            audio_modified = True
+        elif len(audio) < max_samples:
+            pad = np.zeros(max_samples - len(audio), dtype=audio.dtype)
+            audio = np.concatenate([audio, pad], axis=0)
+            audio_modified = True
+        num_f = math.ceil(max_seconds * 25)
+    else:
+        num_f = math.ceil(len(audio) / 16000 * 25)
     
-    num_f = math.ceil(len(audio) / 16000 * 25)
-    
-    SDK.setup_Nd(N_d=num_f, fade_in=-1, fade_out=-1, ctrl_info={})
+    fade_in = run_kwargs.get("fade_in", -1)
+    fade_out = run_kwargs.get("fade_out", -1)
+    ctrl_info = run_kwargs.get("ctrl_info", {})
+    SDK.setup_Nd(N_d=num_f, fade_in=fade_in, fade_out=fade_out, ctrl_info=ctrl_info)
     
     # Offline mode
     aud_feat = SDK.wav2feat.wav2feat(audio)
     SDK.audio2motion_queue.put(aud_feat)
     SDK.close()
     
-    # 오디오 준비 (잘랐으면 임시 파일로 저장)
+    # 오디오 준비 (잘랐거나 패딩했으면 임시 파일로 저장)
     audio_for_merge = audio_path
     temp_audio_path = None
     
-    if audio_trimmed:
+    if audio_modified:
         temp_audio_path = output_path.replace(".mp4", "_temp_audio.wav")
         sf.write(temp_audio_path, audio, 16000)
         audio_for_merge = temp_audio_path
@@ -144,21 +173,37 @@ def main():
     parser.add_argument("--cfg_pkl", type=str, 
                         default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl",
                         help="path to cfg_pkl")
-    parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/experiments/ditto_improved_meanflow_hdtf_20260119_181757/weights/train_100.pt",
+    parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/experiments/ditto_original_posebranch_freeze_Lv75Ls05_spyrt_20260506_183322/weights/train_20.pt",
+    # parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_pytorch/models/lmdm_v0.4_hubert.pth", # ditto original pytorch model
                         help="path to trained checkpoint (optional, uses original if not specified)")
     # parser.add_argument("--checkpoint_path", type=str, default=None,
     #                      help="path to trained checkpoint (optional, uses original if not specified)")
-    parser.add_argument("--use_meanflow", action="store_true", default=True,
+    parser.add_argument("--use_meanflow", action="store_true", default=False,
                         help="use MeanFlow sampling instead of DDIM diffusion")
+
+    # pose branch: keep metric inference aligned with pose-branch training checkpoints.
+    parser.add_argument("--use_pose_branch", action="store_true", default=True,
+                        help="enable pose branch decoder structure for pose-branch checkpoints")
+    parser.add_argument("--pose_branch_hidden_dim", type=int, default=128,
+                        help="pose branch hidden dimension")
+    parser.add_argument("--pose_branch_dropout", type=float, default=0.0,
+                        help="pose branch dropout")
+    parser.add_argument("--pose_branch_residual_scale", type=float, default=1.0,
+                        help="pose branch residual scale")
+    parser.add_argument("--pose_branch_gate_bias", type=float, default=-2.0,
+                        help="pose branch gate bias")
+
     parser.add_argument("--test_dir", type=str,
-                        default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/testset",
+                        default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/testset",         #/workspace/ditto/datasets/Talk8/SUBSET_Talk8/testset
                         help="path to test set directory")
     parser.add_argument("--results_dir", type=str,
-                        default="/workspace/ditto/ditto-talkinghead-train/testset_results/imf_100epoch",
+                        default="/workspace/ditto/ditto-talkinghead-train/dynpose_talk8/posebranch_freeze_Lv75Ls05_spyrt",         # /workspace/ditto/ditto-talkinghead-train/testset_results/imf_100epoch
                         help="path to results directory")
+    parser.add_argument("--more_kwargs", type=str, default=None,
+                        help="optional pkl path containing setup_kwargs/run_kwargs for retargeting and control")
     parser.add_argument("--seed", type=int, default=1024,
                         help="random seed")
-    parser.add_argument("--max_seconds", type=float, default=10.0,
+    parser.add_argument("--max_seconds", type=float, default=10.0,  # MEAD 4.84s
                         help="maximum audio length in seconds (default: 10.0, use 0 for full length)")
     args = parser.parse_args()
     
@@ -187,6 +232,7 @@ def main():
     print("=" * 60)
     print(f"Checkpoint: {args.checkpoint_path or 'original'}")
     print(f"MeanFlow: {args.use_meanflow}")
+    print(f"Pose branch: {args.use_pose_branch}")
     print(f"Max seconds: {args.max_seconds if args.max_seconds else 'Full length'}")
     print(f"Test dir: {args.test_dir}")
     print(f"Output dir: {output_dir}")
@@ -202,18 +248,29 @@ def main():
     
     # Initialize SDK
     print("\nInitializing SDK...")
+    # pose branch: forward inference-time architecture flags so pose-branch
+    # checkpoints can be rendered with the same decoder structure.
+    pose_branch_kwargs = {
+        "use_pose_branch": args.use_pose_branch,
+        "pose_branch_hidden_dim": args.pose_branch_hidden_dim,
+        "pose_branch_dropout": args.pose_branch_dropout,
+        "pose_branch_residual_scale": args.pose_branch_residual_scale,
+        "pose_branch_gate_bias": args.pose_branch_gate_bias,
+    }
     if args.checkpoint_path:
         SDK = StreamSDK(
             args.cfg_pkl, 
             args.data_root, 
             checkpoint_path=args.checkpoint_path,
-            use_meanflow=args.use_meanflow
+            use_meanflow=args.use_meanflow,
+            **pose_branch_kwargs,
         )
     else:
         SDK = StreamSDK(
             args.cfg_pkl, 
             args.data_root,
-            use_meanflow=args.use_meanflow
+            use_meanflow=args.use_meanflow,
+            **pose_branch_kwargs,
         )
     
     # Run inference for each clip
@@ -230,7 +287,8 @@ def main():
                 audio_path=clip["audio_path"],
                 source_path=clip["source_path"],
                 output_path=output_path,
-                max_seconds=args.max_seconds
+                max_seconds=args.max_seconds,
+                more_kwargs=args.more_kwargs or {},
             )
             success_count += 1
         except Exception as e:
@@ -261,4 +319,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

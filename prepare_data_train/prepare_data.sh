@@ -12,7 +12,7 @@ HUBERT_ONNX="${DITTO_PYTORCH_PATH}/aux_models/hubert_streaming_fix_kv.onnx"
 MP_FACE_LMK_TASK="${DITTO_PYTORCH_PATH}/aux_models/face_landmarker.task"
 
 
-cd "${DITTO_ROOT_DIR}/prepare_data"
+cd "${DITTO_ROOT_DIR}/prepare_data_train"
 
 
 data_info_json="$1"

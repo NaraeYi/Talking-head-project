@@ -26,6 +26,7 @@ class LMDM(nn.Module):
         self.seq_frames = seq_frames
         self.device = device
         self.use_meanflow = use_meanflow
+        self.use_pose_branch = bool(kwargs.get("use_pose_branch", False))  # pose branch: mirror training decoder structure.
 
         self.n_timestep = 1000
         self.clip_denoised = clip_denoised
@@ -41,6 +42,11 @@ class LMDM(nn.Module):
                 num_heads=8,
                 dropout=0.1,
                 cond_feature_dim=audio_feat_dim,
+                use_pose_branch=self.use_pose_branch,  # pose branch: enable inference adapter for sampled checkpoints.
+                pose_branch_hidden_dim=kwargs.get("pose_branch_hidden_dim", 128),
+                pose_branch_dropout=kwargs.get("pose_branch_dropout", 0.0),
+                pose_branch_residual_scale=kwargs.get("pose_branch_residual_scale", 1.0),
+                pose_branch_gate_bias=kwargs.get("pose_branch_gate_bias", -2.0),
             )
         else:
             self.model = MotionDecoder(
@@ -53,6 +59,11 @@ class LMDM(nn.Module):
                 dropout=0.1,
                 cond_feature_dim=audio_feat_dim,
                 multi_cond_frame=multi_cond_frame,
+                use_pose_branch=self.use_pose_branch,  # pose branch: enable inference adapter for sampled checkpoints.
+                pose_branch_hidden_dim=kwargs.get("pose_branch_hidden_dim", 128),
+                pose_branch_dropout=kwargs.get("pose_branch_dropout", 0.0),
+                pose_branch_residual_scale=kwargs.get("pose_branch_residual_scale", 1.0),
+                pose_branch_gate_bias=kwargs.get("pose_branch_gate_bias", -2.0),
             )
 
         if not use_meanflow:
@@ -213,4 +224,3 @@ class LMDM(nn.Module):
             u = self.model(e, cond_frame, cond, r, t, cond_drop_prob=0.0)
 
         return e - u, e0
-

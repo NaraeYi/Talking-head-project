@@ -92,6 +92,7 @@ class InsightFaceDet:
             "kps3",
         ]
 
+
     def _run_model(self, blob):
         if self.model_type == "onnx":
             net_outs = self.model.run(None, {"image": blob})

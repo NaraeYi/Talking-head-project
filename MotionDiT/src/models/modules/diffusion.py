@@ -9,6 +9,7 @@ from einops import reduce
 
 from tqdm import tqdm
 
+from .dynamics_loss import DynamicsMatchingLoss
 from .utils import extract, make_beta_schedule
 
 
@@ -35,6 +36,7 @@ class MotionDiffusion(nn.Module):
         use_last_frame_loss=False,
         use_reg_loss=False,
         dim_ws=None,
+        dyn_loss_config=None,
     ):
         super().__init__()
         self.horizon = horizon
@@ -122,6 +124,17 @@ class MotionDiffusion(nn.Module):
             self.register_buffer("dim_ws", torch.from_numpy(dim_ws))
         else:
             self.dim_ws = None
+
+        # dyn loss: optional temporal dynamics auxiliaries shared with MeanFlow.
+        self.has_dyn_loss = (
+            dyn_loss_config is not None
+            and (
+                dyn_loss_config.lambda_var > 0.0
+                or dyn_loss_config.lambda_spec > 0.0
+                or dyn_loss_config.lambda_diff > 0.0
+            )
+        )
+        self.dyn_loss = DynamicsMatchingLoss(dyn_loss_config) if self.has_dyn_loss else None
         
     # ------------------------------------------ sampling ------------------------------------------#
 
@@ -288,7 +301,7 @@ class MotionDiffusion(nn.Module):
 
         return sample
 
-    def p_losses(self, x_start, cond_frame, cond, t):
+    def p_losses(self, x_start, cond_frame, cond, t, global_step=None, total_steps=None):
         noise = torch.randn_like(x_start)
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
@@ -363,22 +376,58 @@ class MotionDiffusion(nn.Module):
             return loss_dict
         
         if self.part_w_dict:
-            loss_dict = _get_pva_loss(model_out, target, self.part_w_dict, self.use_last_frame_loss, self.use_reg_loss, dim_ws=self.dim_ws)
-            total_loss = sum(loss_dict.values())
+            loss_dict = _get_pva_loss(
+                model_out,
+                target,
+                self.part_w_dict,
+                self.use_last_frame_loss,
+                self.use_reg_loss,
+                dim_ws=self.dim_ws,
+            )
+            # dyn loss: keep the existing original-Ditto P/V/A objective intact.
+            pva_total = sum(loss_dict.values())
+            total_loss = pva_total
+            loss_dict["pva_total"] = pva_total.detach()
+
+            # dyn loss: optionally add shared temporal variance / spectrum / diff auxiliaries.
+            if self.dyn_loss is not None:
+                dyn_total, dyn_loss_dict = self.dyn_loss(
+                    model_out,
+                    target,
+                    global_step=global_step,
+                    total_steps=total_steps,
+                )
+                total_loss = total_loss + dyn_total
+                loss_dict.update(dyn_loss_dict)
+
             return total_loss, loss_dict
         else:
             raise NotImplementedError()
 
-    def loss(self, x, cond_frame, cond, t_override=None):
+    def loss(self, x, cond_frame, cond, t_override=None, global_step=None, total_steps=None):
         batch_size = len(x)
         if t_override is None:
             t = torch.randint(0, self.n_timestep, (batch_size,), device=x.device).long()
         else:
             t = torch.full((batch_size,), t_override, device=x.device).long()
-        return self.p_losses(x, cond_frame, cond, t)
+        return self.p_losses(
+            x,
+            cond_frame,
+            cond,
+            t,
+            global_step=global_step,
+            total_steps=total_steps,
+        )
 
-    def forward(self, x, cond_frame, cond, t_override=None):
-        return self.loss(x, cond_frame, cond, t_override)
+    def forward(self, x, cond_frame, cond, t_override=None, global_step=None, total_steps=None):
+        return self.loss(
+            x,
+            cond_frame,
+            cond,
+            t_override=t_override,
+            global_step=global_step,
+            total_steps=total_steps,
+        )
 
     def partial_denoise(self, x, cond, t):
         x_noisy = self.noise_to_t(x, t)

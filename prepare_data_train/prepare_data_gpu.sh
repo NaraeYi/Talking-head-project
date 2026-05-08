@@ -79,11 +79,16 @@ DATA_INFO_JSON=${DATA_INFO_JSON_ENV:-${DATA_INFO_JSON}}
 DATA_LIST_JSON=${DATA_LIST_JSON_ENV:-${DATA_LIST_JSON}}
 DATA_PRELOAD_PKL=${DATA_PRELOAD_PKL_ENV:-${DATA_PRELOAD_PKL}}
 GPU_DEVICE_ID=${GPU_DEVICE_ID_ENV:-${GPU_DEVICE_ID}}
+USE_PARALLEL_GPU=${USE_PARALLEL_GPU_ENV:-${USE_PARALLEL_GPU}}
+GPU_MOTION_ORIG=${GPU_MOTION_ORIG_ENV:-${GPU_MOTION_ORIG}}
+GPU_MOTION_FLIP=${GPU_MOTION_FLIP_ENV:-${GPU_MOTION_FLIP}}
+GPU_EMOTION=${GPU_EMOTION_ENV:-${GPU_EMOTION}}
 
 # 변수명 통일
 data_info_json="${DATA_INFO_JSON}"
 data_list_json="${DATA_LIST_JSON}"
 data_preload_pkl="${DATA_PRELOAD_PKL}"
+DATA_DIR="$(dirname "${data_info_json}")"
 
 # data_info_json 파일 존재 확인
 if [ ! -f "${data_info_json}" ]; then
@@ -362,4 +367,3 @@ echo "data_preload_pkl: ${data_preload_pkl}"
 echo "End Time: $(date)"
 echo "Elapsed time: $SECONDS seconds ($(($SECONDS / 60)) minutes)"
 echo "================================================"
-

@@ -9,8 +9,8 @@ import time
 
 # from stream_pipeline_offline import StreamSDK
 # from stream_pipeline_offline_retargeting import StreamSDK
-from stream_pipeline_offline_faster import StreamSDK
-# from stream_pipeline_offline_retargeting_faster_2 import StreamSDK
+# from stream_pipeline_offline_faster import StreamSDK
+from stream_pipeline_offline_retargeting_faster import StreamSDK
 
 def seed_everything(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -174,17 +174,23 @@ if __name__ == "__main__":
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_pytorch.pkl", help="path to cfg_pkl")          # pytorch model
     parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl", help="path to cfg_pkl")    # ditto tensorrt model
     # parser.add_argument("--cfg_pkl", type=str, default="/workspace/ditto/ditto-talkinghead-train/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_meanflow.pkl", help="path to cfg_pkl")    # meanflow tensorrt model
-    # parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/experiments/ditto_original_hdtf_20251221_234237/weights/train_99.pt", help="path to trained checkpoint (overrides pkl model_path)")
+    # parser.add_argument("--checkpoint_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/experiments/ditto_original_dynloss_LvarLspec_20260502_010245/weights/train_20.pt", help="path to trained checkpoint (overrides pkl model_path)")
     parser.add_argument("--checkpoint_path", type=str, default=None, help="path to trained checkpoint (overrides pkl model_path)")
     parser.add_argument("--use_meanflow", type=bool, default=False, help="Use MeanFlow (1-step) instead of DDIM diffusion")     # True: MeanFlow (1-step), False: DDIM diffusion
     parser.add_argument("--meanflow_mode", type=str, default="improved", choices=["meanflow", "improved"],
                        help="MeanFlow mode: 'meanflow' (original) or 'improved' (default: improved)")
+    # pose branch: use these when rendering checkpoints trained with the pose residual adapter.
+    parser.add_argument("--use_pose_branch", default=True, help="Enable pose branch decoder structure for pose-branch checkpoints")
+    parser.add_argument("--pose_branch_hidden_dim", type=int, default=128)
+    parser.add_argument("--pose_branch_dropout", type=float, default=0.0)
+    parser.add_argument("--pose_branch_residual_scale", type=float, default=1.0)
+    parser.add_argument("--pose_branch_gate_bias", type=float, default=-2.0)
 
     # parser.add_argument("--audio_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/audio.wav")
     # parser.add_argument("--source_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/example/image.png")
-    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/obama_10s.wav") # Shaheen obama
+    parser.add_argument("--audio_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/audio/obama_10s.wav") # Shaheen obama RD_Radio1_000_10s
     parser.add_argument("--source_path", type=str, default="/workspace/ditto/datasets/Talk8/SUBSET_Talk8/ref/obama.png")
-    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/ditto_original_output/sample_faster.mp4") # iMF meanflow original / mf15s_trt imf15s_trt ditto15s_trt
+    parser.add_argument("--output_path", type=str, default="/workspace/ditto/ditto-talkinghead-train/sample_output/obama_500epoch.mp4") # iMF meanflow original / mf15s_trt imf15s_trt ditto15s_trt
     args = parser.parse_args()
 
     # init sdk
@@ -194,10 +200,31 @@ if __name__ == "__main__":
     # checkpoint_path가 지정되면 새로 학습한 가중치로 대체
     use_meanflow = args.use_meanflow  # True: MeanFlow (1-step), False: DDIM diffusion
     meanflow_mode = args.meanflow_mode  # "meanflow" or "improved"
+    # pose branch: keep manual inference model construction aligned with training options.
+    pose_branch_kwargs = {
+        "use_pose_branch": args.use_pose_branch,
+        "pose_branch_hidden_dim": args.pose_branch_hidden_dim,
+        "pose_branch_dropout": args.pose_branch_dropout,
+        "pose_branch_residual_scale": args.pose_branch_residual_scale,
+        "pose_branch_gate_bias": args.pose_branch_gate_bias,
+    }
     if args.checkpoint_path:
-        SDK = StreamSDK(cfg_pkl, data_root, checkpoint_path=args.checkpoint_path, use_meanflow=use_meanflow, meanflow_mode=meanflow_mode)
+        SDK = StreamSDK(
+            cfg_pkl,
+            data_root,
+            checkpoint_path=args.checkpoint_path,
+            use_meanflow=use_meanflow,
+            meanflow_mode=meanflow_mode,
+            **pose_branch_kwargs,
+        )
     else:
-        SDK = StreamSDK(cfg_pkl, data_root, use_meanflow=use_meanflow, meanflow_mode=meanflow_mode)
+        SDK = StreamSDK(
+            cfg_pkl,
+            data_root,
+            use_meanflow=use_meanflow,
+            meanflow_mode=meanflow_mode,
+            **pose_branch_kwargs,
+        )
 
     # input args
     audio_path = args.audio_path    # .wav

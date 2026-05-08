@@ -21,6 +21,7 @@ class LMDM:
         
         self.use_meanflow = kwargs.get("use_meanflow", False)
         self.meanflow_mode = kwargs.get("meanflow_mode", "improved")
+        self.use_pose_branch = kwargs.get("use_pose_branch", False)  # pose branch: expose model-construction flag in logs.
 
         self.model, self.model_type = load_model(model_path, device=device, **kwargs)
         self.device = device
@@ -31,7 +32,7 @@ class LMDM:
 
         # 디버그: 로드된 모델 타입 출력
         print(f"[LMDM] Loaded model: {model_path}")
-        print(f"[LMDM] Model type: {self.model_type}, use_meanflow: {self.use_meanflow}, meanflow_mode: {self.meanflow_mode}")
+        print(f"[LMDM] Model type: {self.model_type}, use_meanflow: {self.use_meanflow}, meanflow_mode: {self.meanflow_mode}, use_pose_branch: {self.use_pose_branch}")
 
         if self.model_type == "pytorch":
             pass
@@ -281,5 +282,4 @@ class LMDM:
                 # Diffusion (Ditto) with TensorRT/ONNX
                 pred_kp_seq = self._call_np(kp_cond, aud_cond, sampling_timesteps)
                 return pred_kp_seq, None
-
 

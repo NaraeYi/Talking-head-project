@@ -235,6 +235,51 @@ class DecoderLayerStack(nn.Module):
         return x
 
 
+class PoseResidualBranch(nn.Module):
+    """
+    pose branch: lightweight inference-time copy of the training adapter.
+    It predicts only pitch/yaw/roll residuals from the shared transformer
+    feature, without adding another diffusion process or changing exp/lip dims.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        pose_dim: int = 198,    # pitch/yaw/roll
+        hidden_dim: int = 128,  
+        dropout: float = 0.0,
+        residual_scale: float = 1.0,
+        gate_bias: float = -2.0,
+    ) -> None:
+        super().__init__()
+        hidden_dim = hidden_dim if hidden_dim > 0 else max(64, latent_dim // 4)
+        self.residual_scale = float(residual_scale)
+
+        # pose branch: adapter is intentionally small so inference stays close
+        # to the original MotionDiT cost.
+        self.adapter = nn.Sequential(
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+        )
+        self.to_residual = nn.Linear(hidden_dim, pose_dim)
+        self.to_gate = nn.Linear(hidden_dim, pose_dim)
+
+        # pose branch: no-op initialization keeps old checkpoints compatible
+        # when the branch is enabled before it has learned residuals.
+        nn.init.zeros_(self.to_residual.weight)
+        nn.init.zeros_(self.to_residual.bias)
+        nn.init.zeros_(self.to_gate.weight)
+        nn.init.constant_(self.to_gate.bias, gate_bias)
+
+    def forward(self, shared_feature: Tensor) -> tuple[Tensor, Tensor]:
+        hidden = self.adapter(shared_feature)
+        residual = self.to_residual(hidden) * self.residual_scale
+        gate = torch.sigmoid(self.to_gate(hidden))
+        return residual * gate, gate
+
+
 class MotionDecoder(nn.Module):
     def __init__(
         self,
@@ -333,8 +378,38 @@ class MotionDecoder(nn.Module):
         self.seqTransDecoder = DecoderLayerStack(decoderstack)
         
         self.final_layer = nn.Linear(latent_dim, output_feats)
+
+        # pose branch: optional pitch/yaw/roll residual adapter after the base decoder.
+        self.use_pose_branch = bool(kwargs.get("use_pose_branch", False))
+        self.pose_branch_slices = ((1, 67), (67, 133), (133, 199))
+        self.pose_branch = (
+            PoseResidualBranch(
+                latent_dim=latent_dim,
+                pose_dim=sum(e - s for s, e in self.pose_branch_slices),
+                hidden_dim=int(kwargs.get("pose_branch_hidden_dim", 128)),
+                dropout=float(kwargs.get("pose_branch_dropout", 0.0)),
+                residual_scale=float(kwargs.get("pose_branch_residual_scale", 1.0)),
+                gate_bias=float(kwargs.get("pose_branch_gate_bias", -2.0)),
+            )
+            if self.use_pose_branch
+            else None
+        )
         
         self.epsilon = 0.00001
+
+    def _apply_pose_branch(self, output: Tensor, shared_feature: Tensor) -> Tensor:
+        if self.pose_branch is None:
+            return output
+
+        # pose branch: add residual only to pitch/yaw/roll; leave scale/t/exp unchanged.
+        pose_residual, _ = self.pose_branch(shared_feature)
+        output = output.clone()
+        offset = 0
+        for start, end in self.pose_branch_slices:
+            width = end - start
+            output[..., start:end] = output[..., start:end] + pose_residual[..., offset:offset + width]
+            offset += width
+        return output
 
     def guided_forward(self, x, cond_frame, cond_embed, times, guidance_weight):
         unc = self.forward(x, cond_frame, cond_embed, times, cond_drop_prob=1)
@@ -394,8 +469,10 @@ class MotionDecoder(nn.Module):
         # Pass through the transformer decoder
         # attending to the conditional embedding
         output = self.seqTransDecoder(x, cond_tokens, t)
+        shared_feature = output
 
-        output = self.final_layer(output)
+        output = self.final_layer(shared_feature)
+        output = self._apply_pose_branch(output, shared_feature)
 
         return output
 
@@ -510,6 +587,36 @@ class MotionDecoderMF(nn.Module):
         self.seqTransDecoder = DecoderLayerStack(decoderstack)
         self.final_layer = nn.Linear(latent_dim, output_feats)
 
+        # pose branch: optional pitch/yaw/roll residual adapter after the base decoder.
+        self.use_pose_branch = bool(kwargs.get("use_pose_branch", False))
+        self.pose_branch_slices = ((1, 67), (67, 133), (133, 199))
+        self.pose_branch = (
+            PoseResidualBranch(
+                latent_dim=latent_dim,
+                pose_dim=sum(e - s for s, e in self.pose_branch_slices),
+                hidden_dim=int(kwargs.get("pose_branch_hidden_dim", 128)),
+                dropout=float(kwargs.get("pose_branch_dropout", 0.0)),
+                residual_scale=float(kwargs.get("pose_branch_residual_scale", 1.0)),
+                gate_bias=float(kwargs.get("pose_branch_gate_bias", -2.0)),
+            )
+            if self.use_pose_branch
+            else None
+        )
+
+    def _apply_pose_branch(self, output: Tensor, shared_feature: Tensor) -> Tensor:
+        if self.pose_branch is None:
+            return output
+
+        # pose branch: add residual only to pitch/yaw/roll; leave scale/t/exp unchanged.
+        pose_residual, _ = self.pose_branch(shared_feature)
+        output = output.clone()
+        offset = 0
+        for start, end in self.pose_branch_slices:
+            width = end - start
+            output[..., start:end] = output[..., start:end] + pose_residual[..., offset:offset + width]
+            offset += width
+        return output
+
     def forward(
         self,
         x: Tensor,
@@ -584,7 +691,10 @@ class MotionDecoderMF(nn.Module):
 
         # decode
         output = self.seqTransDecoder(x, cond_tokens, t_film)
-        output = self.final_layer(output)
+        shared_feature = output
+
+        output = self.final_layer(shared_feature)
+        output = self._apply_pose_branch(output, shared_feature)
         return output
     
 
